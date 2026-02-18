@@ -1,0 +1,5 @@
+aiogram==3.4.1
+google-api-python-client
+google-auth
+openpyxl
+aiohttp
