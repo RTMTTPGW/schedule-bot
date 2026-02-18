@@ -12,9 +12,14 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from openpyxl import load_workbook
 
+# ================= НАСТРОЙКИ =================
+
 TOKEN = os.getenv("8512190832:AAGM5Aj_IzyWX77mnxozabEjOwTx7MdAwF0")
 FOLDER_ID = "1fxehYVWNrEC5EoHnrzgaxoSyCDXCDTur"
 GROUP_NAME = "2-24 ОРП-1"
+
+if not TOKEN:
+    raise ValueError("BOT_TOKEN не найден в переменных окружения")
 
 # ================= GOOGLE DRIVE =================
 
@@ -26,6 +31,7 @@ credentials = service_account.Credentials.from_service_account_file(
 )
 
 drive_service = build("drive", "v3", credentials=credentials)
+
 
 def find_file():
     today = datetime.now()
@@ -49,9 +55,11 @@ def find_file():
 
     return None
 
+
 def download_file(file_id):
     request = drive_service.files().get_media(fileId=file_id)
     return io.BytesIO(request.execute())
+
 
 def parse_schedule(file_bytes):
     wb = load_workbook(file_bytes)
@@ -61,14 +69,22 @@ def parse_schedule(file_bytes):
     found = False
 
     for row in sheet.iter_rows(values_only=True):
-        if GROUP_NAME in [str(cell) for cell in row if cell]:
+        row_values = [str(cell) if cell else "" for cell in row]
+
+        if GROUP_NAME in row_values:
             found = True
             continue
 
         if found:
             if isinstance(row[0], int):
+                subject = row[1] or ""
+                teacher = row[2] or ""
+                cabinet = row[3] or ""
+
                 schedule.append(
-                    f"{row[0]}. {row[1]}\nПреп: {row[2]}\nКаб: {row[3]}\n"
+                    f"{row[0]}. {subject}\n"
+                    f"Преп: {teacher}\n"
+                    f"Каб: {cabinet}\n"
                 )
             else:
                 break
@@ -78,20 +94,26 @@ def parse_schedule(file_bytes):
 
     return "\n".join(schedule)
 
+
 # ================= TELEGRAM =================
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
+
 @dp.inline_query()
 async def inline_handler(inline_query: types.InlineQuery):
-    file_id = find_file()
+    try:
+        file_id = find_file()
 
-    if not file_id:
-        text = "Файл расписания не найден."
-    else:
-        file_bytes = download_file(file_id)
-        text = parse_schedule(file_bytes)
+        if not file_id:
+            text = "Файл расписания не найден."
+        else:
+            file_bytes = download_file(file_id)
+            text = parse_schedule(file_bytes)
+
+    except Exception as e:
+        text = f"Ошибка: {str(e)}"
 
     result = InlineQueryResultArticle(
         id=str(uuid4()),
@@ -101,12 +123,23 @@ async def inline_handler(inline_query: types.InlineQuery):
 
     await inline_query.answer([result], cache_time=1)
 
+
 # ================= WEBHOOK =================
 
-async def on_startup(bot: Bot):
-    await bot.set_webhook(os.getenv("RENDER_EXTERNAL_URL"))
+async def on_startup(app):
+    webhook_url = os.getenv("RENDER_EXTERNAL_URL")
+    if not webhook_url:
+        raise ValueError("RENDER_EXTERNAL_URL не найден")
+
+    await bot.set_webhook(webhook_url)
+
 
 app = web.Application()
+app.on_startup.append(on_startup)
+
 SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path="/")
 setup_application(app, dp, bot=bot)
-web.run_app(app, host="0.0.0.0", port=10000)
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    web.run_app(app, host="0.0.0.0", port=port)
