@@ -14,7 +14,7 @@ from openpyxl import load_workbook
 
 # ================= НАСТРОЙКИ =================
 
-TOKEN = os.getenv("8512190832:AAGM5Aj_IzyWX77mnxozabEjOwTx7MdAwF0")
+TOKEN = os.getenv("BOT_TOKEN")
 FOLDER_ID = "1fxehYVWNrEC5EoHnrzgaxoSyCDXCDTur"
 GROUP_NAME = "2-24 ОРП-1"
 
