@@ -52,10 +52,22 @@ def find_file_id():
 
 
 def download_file(file_id):
-    download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
-    response = requests.get(download_url)
-    return io.BytesIO(response.content)
+    session = requests.Session()
 
+    url = "https://drive.google.com/uc?export=download"
+    response = session.get(url, params={"id": file_id}, stream=True)
+
+    # Проверяем наличие confirm token
+    for key, value in response.cookies.items():
+        if key.startswith("download_warning"):
+            response = session.get(
+                url,
+                params={"id": file_id, "confirm": value},
+                stream=True,
+            )
+            break
+
+    return io.BytesIO(response.content)
 
 # ================= PARSE XLSX =================
 
