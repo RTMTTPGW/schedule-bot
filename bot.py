@@ -44,7 +44,6 @@ def find_file_id():
 
     response = requests.get(url, params=params)
     data = response.json()
-
     files = data.get("files", [])
 
     for date in dates:
@@ -52,9 +51,9 @@ def find_file_id():
 
         for file in files:
             if date_str in file["name"]:
-                return file["id"]
+                return file["id"], date_str
 
-    return None
+    return None, None
 
 
 def download_file(file_id):
@@ -75,7 +74,7 @@ def download_file(file_id):
 
 # ================= PARSE XLSX =================
 
-def parse_schedule(file_bytes):
+def parse_schedule(file_bytes, date_str):
     wb = load_workbook(file_bytes)
     sheet = wb.active
 
@@ -92,7 +91,7 @@ def parse_schedule(file_bytes):
                 found = True
             continue
 
-        # Номер пары в колонке A (индекс 0)
+        # Номер пары в колонке A
         pair_number = row_values[0]
 
         if pair_number.isdigit():
@@ -100,19 +99,27 @@ def parse_schedule(file_bytes):
             teacher = row_values[4] if len(row_values) > 4 else ""
             cabinet = row_values[6] if len(row_values) > 6 else ""
 
-            schedule.append(
-                f"{pair_number}. {subject}\n"
-                f"Преп: {teacher}\n"
-                f"Каб: {cabinet}\n"
-            )
-        else:
-            if schedule:
-                break
+            schedule.append({
+                "number": pair_number,
+                "subject": subject,
+                "teacher": teacher,
+                "cabinet": cabinet
+            })
 
     if not schedule:
         return "Расписание не найдено."
 
-    return "\n".join(schedule)
+    # Красивое форматирование
+  result = f"📅 Расписание на {date_str}\n\n"
+
+    for lesson in schedule:
+        result += (
+            f"🔹 {lesson['number']} пара\n"
+            f"   📖 {lesson['subject']}\n"
+            f"   👩‍🏫 {lesson['teacher']}\n"
+            f"   🏫 Кабинет: {lesson['cabinet']}\n\n"
+        )
+    return result
 
 # ================= TELEGRAM =================
 
@@ -123,13 +130,14 @@ dp = Dispatcher()
 @dp.inline_query()
 async def inline_handler(inline_query: types.InlineQuery):
     try:
-        file_id = find_file_id()
+        file_id, date_str = find_file_id()
 
-        if not file_id:
-            text = "Файл расписания не найден."
-        else:
-            file_bytes = download_file(file_id)
-            text = parse_schedule(file_bytes)
+if not file_id:
+    text = "Файл расписания не найден."
+else:
+    file_bytes = download_file(file_id)
+    text = parse_schedule(file_bytes, date_str)
+
 
     except Exception as e:
         text = f"Ошибка: {str(e)}"
