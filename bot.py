@@ -1,5 +1,7 @@
 import os
 import io
+import re
+import requests
 from datetime import datetime, timedelta
 from uuid import uuid4
 
@@ -8,9 +10,8 @@ from aiogram.types import InlineQueryResultArticle, InputTextMessageContent
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
 
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
 from openpyxl import load_workbook
+from bs4 import BeautifulSoup
 
 # ================= НАСТРОЙКИ =================
 
@@ -19,21 +20,15 @@ FOLDER_ID = "1fxehYVWNrEC5EoHnrzgaxoSyCDXCDTur"
 GROUP_NAME = "2-24 ОРП-1"
 
 if not TOKEN:
-    raise ValueError("BOT_TOKEN не найден в переменных окружения")
+    raise ValueError("BOT_TOKEN не найден")
 
-# ================= GOOGLE DRIVE =================
+# ================= GOOGLE DRIVE (PUBLIC PARSING) =================
 
-SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
+def find_file_id():
+    folder_url = f"https://drive.google.com/drive/folders/{FOLDER_ID}"
+    response = requests.get(folder_url)
+    soup = BeautifulSoup(response.text, "html.parser")
 
-credentials = service_account.Credentials.from_service_account_file(
-    "credentials.json",
-    scopes=SCOPES
-)
-
-drive_service = build("drive", "v3", credentials=credentials)
-
-
-def find_file():
     today = datetime.now()
     dates = [
         today + timedelta(days=1),
@@ -41,25 +36,28 @@ def find_file():
         today - timedelta(days=1),
     ]
 
+    html_text = response.text
+
+    # Ищем все file IDs в HTML
+    file_ids = re.findall(r'"([a-zA-Z0-9_-]{25,})"', html_text)
+
     for date in dates:
         date_str = date.strftime("%d.%m.%Y")
 
-        results = drive_service.files().list(
-            q=f"'{FOLDER_ID}' in parents and name contains '{date_str}'",
-            fields="files(id, name)"
-        ).execute()
-
-        files = results.get("files", [])
-        if files:
-            return files[0]["id"]
+        for file_id in file_ids:
+            if date_str in html_text:
+                return file_id
 
     return None
 
 
 def download_file(file_id):
-    request = drive_service.files().get_media(fileId=file_id)
-    return io.BytesIO(request.execute())
+    download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+    response = requests.get(download_url)
+    return io.BytesIO(response.content)
 
+
+# ================= PARSE XLSX =================
 
 def parse_schedule(file_bytes):
     wb = load_workbook(file_bytes)
@@ -104,7 +102,7 @@ dp = Dispatcher()
 @dp.inline_query()
 async def inline_handler(inline_query: types.InlineQuery):
     try:
-        file_id = find_file()
+        file_id = find_file_id()
 
         if not file_id:
             text = "Файл расписания не найден."
