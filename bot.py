@@ -1,6 +1,5 @@
 import os
 import io
-import re
 import requests
 from datetime import datetime, timedelta
 from uuid import uuid4
@@ -11,24 +10,23 @@ from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_applicati
 from aiohttp import web
 
 from openpyxl import load_workbook
-from bs4 import BeautifulSoup
-
-# ================= НАСТРОЙКИ =================
 
 TOKEN = os.getenv("BOT_TOKEN")
+DRIVE_API_KEY = os.getenv("DRIVE_API_KEY")
+
 FOLDER_ID = "1fxehYVWNrEC5EoHnrzgaxoSyCDXCDTur"
 GROUP_NAME = "2-24 ОРП-1"
 
 if not TOKEN:
     raise ValueError("BOT_TOKEN не найден")
 
-# ================= GOOGLE DRIVE (PUBLIC PARSING) =================
+if not DRIVE_API_KEY:
+    raise ValueError("DRIVE_API_KEY не найден")
+
+
+# ================= GOOGLE DRIVE API =================
 
 def find_file_id():
-    folder_url = f"https://drive.google.com/drive/folders/{FOLDER_ID}"
-    response = requests.get(folder_url)
-    html = response.text
-
     today = datetime.now()
     dates = [
         today + timedelta(days=1),
@@ -36,36 +34,34 @@ def find_file_id():
         today - timedelta(days=1),
     ]
 
+    url = "https://www.googleapis.com/drive/v3/files"
+
+    params = {
+        "q": f"'{FOLDER_ID}' in parents",
+        "fields": "files(id, name)",
+        "key": DRIVE_API_KEY
+    }
+
+    response = requests.get(url, params=params)
+    data = response.json()
+
+    files = data.get("files", [])
+
     for date in dates:
         date_str = date.strftime("%d.%m.%Y")
 
-        # Ищем блок где есть дата
-        pattern = rf'(["\'])([a-zA-Z0-9_-]{{25,}})\1.*?Расписание\s+{re.escape(date_str)}'
-        match = re.search(pattern, html)
-
-        if match:
-            return match.group(2)
+        for file in files:
+            if date_str in file["name"]:
+                return file["id"]
 
     return None
 
 
 def download_file(file_id):
-    session = requests.Session()
-
-    url = "https://drive.google.com/uc?export=download"
-    response = session.get(url, params={"id": file_id}, stream=True)
-
-    # Проверяем наличие confirm token
-    for key, value in response.cookies.items():
-        if key.startswith("download_warning"):
-            response = session.get(
-                url,
-                params={"id": file_id, "confirm": value},
-                stream=True,
-            )
-            break
-
+    download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+    response = requests.get(download_url)
     return io.BytesIO(response.content)
+
 
 # ================= PARSE XLSX =================
 
@@ -136,9 +132,6 @@ async def inline_handler(inline_query: types.InlineQuery):
 
 async def on_startup(app):
     webhook_url = os.getenv("RENDER_EXTERNAL_URL")
-    if not webhook_url:
-        raise ValueError("RENDER_EXTERNAL_URL не найден")
-
     await bot.set_webhook(webhook_url)
 
 
