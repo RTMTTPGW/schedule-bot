@@ -82,19 +82,22 @@ def parse_schedule(file_bytes, date_str):
     sheet = wb.active
 
     schedule = []
-    found = False
+    found_group = False
     target_group = GROUP_NAME.strip().lower()
 
     for row in sheet.iter_rows(values_only=True):
         row_values = [str(cell).strip() if cell else "" for cell in row]
 
         # Ищем строку с группой
-        if not found:
+        if not found_group:
             if any(target_group in cell.lower() for cell in row_values):
-                found = True
+                found_group = True
             continue
 
-        # Номер пары в колонке A
+        # Если снова встретили строку с группой — прекращаем
+        if any(target_group in cell.lower() for cell in row_values):
+            break
+
         pair_number = row_values[0]
 
         if pair_number.isdigit():
@@ -102,15 +105,26 @@ def parse_schedule(file_bytes, date_str):
             teacher = row_values[4] if len(row_values) > 4 else ""
             cabinet = row_values[6] if len(row_values) > 6 else ""
 
+            # Пропускаем мусорные строки
+            if subject.lower() == "нет" or subject == "":
+                continue
+
             schedule.append({
-                "number": pair_number,
+                "number": int(pair_number),
                 "subject": subject,
                 "teacher": teacher,
                 "cabinet": cabinet
             })
 
+        # Если дошли до пустой строки после пар — останавливаемся
+        elif schedule:
+            break
+
     if not schedule:
         return "Расписание не найдено."
+
+    # Сортируем по номеру пары
+    schedule.sort(key=lambda x: x["number"])
 
     # Красивый вывод
     result = f"📅 Расписание на {date_str}\n\n"
