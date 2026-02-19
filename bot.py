@@ -58,21 +58,17 @@ def find_file_id():
 
 
 def download_file(file_id):
-    session = requests.Session()
-    url = "https://drive.google.com/uc?export=download"
+    url = f"https://www.googleapis.com/drive/v3/files/{file_id}"
+    
+    params = {
+        "alt": "media",
+        "key": DRIVE_API_KEY
+    }
 
-    response = session.get(url, params={"id": file_id}, stream=True)
+    response = requests.get(url, params=params)
 
-    # Проверяем, не HTML ли это
-    if "text/html" in response.headers.get("Content-Type", ""):
-        for key, value in response.cookies.items():
-            if key.startswith("download_warning"):
-                response = session.get(
-                    url,
-                    params={"id": file_id, "confirm": value},
-                    stream=True,
-                )
-                break
+    if response.status_code != 200:
+        raise Exception(f"Ошибка загрузки файла: {response.text}")
 
     return io.BytesIO(response.content)
 
