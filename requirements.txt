@@ -1,5 +1,5 @@
 aiogram
 aiohttp
-google-api-python-client
-google-auth
 openpyxl
+requests
+beautifulsoup4
