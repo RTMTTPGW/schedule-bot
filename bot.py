@@ -27,7 +27,7 @@ if not TOKEN:
 def find_file_id():
     folder_url = f"https://drive.google.com/drive/folders/{FOLDER_ID}"
     response = requests.get(folder_url)
-    soup = BeautifulSoup(response.text, "html.parser")
+    html = response.text
 
     today = datetime.now()
     dates = [
@@ -36,17 +36,15 @@ def find_file_id():
         today - timedelta(days=1),
     ]
 
-    html_text = response.text
-
-    # Ищем все file IDs в HTML
-    file_ids = re.findall(r'"([a-zA-Z0-9_-]{25,})"', html_text)
-
     for date in dates:
         date_str = date.strftime("%d.%m.%Y")
 
-        for file_id in file_ids:
-            if date_str in html_text:
-                return file_id
+        # Ищем блок где есть дата
+        pattern = rf'(["\'])([a-zA-Z0-9_-]{{25,}})\1.*?Расписание\s+{re.escape(date_str)}'
+        match = re.search(pattern, html)
+
+        if match:
+            return match.group(2)
 
     return None
 
