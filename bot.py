@@ -11,6 +11,9 @@ from aiohttp import web
 
 from openpyxl import load_workbook
 
+
+# ================= ENV =================
+
 TOKEN = os.getenv("BOT_TOKEN")
 DRIVE_API_KEY = os.getenv("DRIVE_API_KEY")
 
@@ -24,7 +27,7 @@ if not DRIVE_API_KEY:
     raise ValueError("DRIVE_API_KEY не найден")
 
 
-# ================= GOOGLE DRIVE API =================
+# ================= GOOGLE DRIVE =================
 
 def find_file_id():
     today = datetime.now()
@@ -109,8 +112,8 @@ def parse_schedule(file_bytes, date_str):
     if not schedule:
         return "Расписание не найдено."
 
-    # Красивое форматирование
-  result = f"📅 Расписание на {date_str}\n\n"
+    # Красивый вывод
+    result = f"📅 Расписание на {date_str}\n\n"
 
     for lesson in schedule:
         result += (
@@ -119,7 +122,9 @@ def parse_schedule(file_bytes, date_str):
             f"   👩‍🏫 {lesson['teacher']}\n"
             f"   🏫 Кабинет: {lesson['cabinet']}\n\n"
         )
+
     return result
+
 
 # ================= TELEGRAM =================
 
@@ -132,12 +137,11 @@ async def inline_handler(inline_query: types.InlineQuery):
     try:
         file_id, date_str = find_file_id()
 
-if not file_id:
-    text = "Файл расписания не найден."
-else:
-    file_bytes = download_file(file_id)
-    text = parse_schedule(file_bytes, date_str)
-
+        if not file_id:
+            text = "Файл расписания не найден."
+        else:
+            file_bytes = download_file(file_id)
+            text = parse_schedule(file_bytes, date_str)
 
     except Exception as e:
         text = f"Ошибка: {str(e)}"
@@ -151,7 +155,7 @@ else:
     await inline_query.answer([result], cache_time=1)
 
 
-# ================= WEBHOOK =================
+# ================= WEBHOOK (Render) =================
 
 async def on_startup(app):
     webhook_url = os.getenv("RENDER_EXTERNAL_URL")
