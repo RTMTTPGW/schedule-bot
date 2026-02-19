@@ -82,25 +82,37 @@ def parse_schedule(file_bytes):
     schedule = []
     found = False
 
-    for row in sheet.iter_rows(values_only=True):
-        row_values = [str(cell) if cell else "" for cell in row]
+    # Нормализуем имя группы
+    target_group = GROUP_NAME.strip().lower()
 
-        if GROUP_NAME in row_values:
-            found = True
+    for row in sheet.iter_rows(values_only=True):
+        row_values = [str(cell).strip() if cell else "" for cell in row]
+
+        # Поиск строки с группой (гибкий)
+        if not found:
+            for cell in row_values:
+                if target_group in cell.lower():
+                    found = True
+                    break
             continue
 
-        if found:
-            if isinstance(row[0], int):
-                subject = row[1] or ""
-                teacher = row[2] or ""
-                cabinet = row[3] or ""
+        # После нахождения группы — ищем пары
+        first_cell = str(row_values[0]).strip()
 
-                schedule.append(
-                    f"{row[0]}. {subject}\n"
-                    f"Преп: {teacher}\n"
-                    f"Каб: {cabinet}\n"
-                )
-            else:
+        # Проверяем, является ли первая ячейка номером пары
+        if first_cell.isdigit():
+            subject = row_values[1] if len(row_values) > 1 else ""
+            teacher = row_values[2] if len(row_values) > 2 else ""
+            cabinet = row_values[3] if len(row_values) > 3 else ""
+
+            schedule.append(
+                f"{first_cell}. {subject}\n"
+                f"Преп: {teacher}\n"
+                f"Каб: {cabinet}\n"
+            )
+        else:
+            # Если пошли строки не с номером пары — прекращаем
+            if schedule:
                 break
 
     if not schedule:
