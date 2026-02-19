@@ -58,10 +58,10 @@ def find_file_id():
 
 
 def download_file(file_id):
-    url = f"https://www.googleapis.com/drive/v3/files/{file_id}"
-    
+    url = f"https://www.googleapis.com/drive/v3/files/{file_id}/export"
+
     params = {
-        "alt": "media",
+        "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "key": DRIVE_API_KEY
     }
 
