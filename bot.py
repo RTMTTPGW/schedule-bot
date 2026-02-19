@@ -76,50 +76,75 @@ def download_file(file_id):
 # ================= PARSE XLSX =================
 
 def parse_schedule(file_bytes):
-    wb = load_workbook(file_bytes)
+    from openpyxl.utils import get_column_letter
+    
+    wb = load_workbook(file_bytes, data_only=True)
     sheet = wb.active
+    
+    # Заполняем объединённые ячейки (очень важно!)
+    for merged in list(sheet.merged_cells.ranges):
+        min_col, min_row, max_col, max_row = merged.bounds
+        value = sheet.cell(min_row, min_col).value
+        for r in range(min_row, max_row + 1):
+            for c in range(min_col, max_col + 1):
+                sheet.cell(r, c).value = value
 
     schedule = []
-    found = False
+    group_found = False
+    target_group = GROUP_NAME.strip().lower()  # "2-24 орп-1"
 
-    # Нормализуем имя группы
-    target_group = GROUP_NAME.strip().lower()
-
-    for row in sheet.iter_rows(values_only=True):
-        row_values = [str(cell).strip() if cell else "" for cell in row]
-
-        # Поиск строки с группой (гибкий)
-        if not found:
-            for cell in row_values:
-                if target_group in cell.lower():
-                    found = True
-                    break
+    for row_idx, row in enumerate(sheet.iter_rows(values_only=True), start=1):
+        if row is None:
             continue
-
-        # После нахождения группы — ищем пары
-        first_cell = str(row_values[0]).strip()
-
-        # Проверяем, является ли первая ячейка номером пары
-        if first_cell.isdigit():
-            subject = row_values[1] if len(row_values) > 1 else ""
-            teacher = row_values[2] if len(row_values) > 2 else ""
-            cabinet = row_values[3] if len(row_values) > 3 else ""
-
-            schedule.append(
-                f"{first_cell}. {subject}\n"
-                f"Преп: {teacher}\n"
-                f"Каб: {cabinet}\n"
-            )
-        else:
-            # Если пошли строки не с номером пары — прекращаем
-            if schedule:
-                break
+            
+        row_values = [str(cell).strip() if cell is not None else "" for cell in row]
+        
+        # Ищем строку с названием группы (может быть в любой ячейке)
+        if not group_found:
+            row_text = " ".join(row_values).lower()
+            if target_group in row_text:
+                group_found = True
+                # Можно сразу продолжить — группа часто в той же строке, что и заголовок
+                continue
+        
+        if not group_found:
+            continue
+        
+        # Номер пары — всегда в столбце A (индекс 0)
+        first_cell = row_values[0]
+        if not first_cell:
+            continue  # пустая строка — пропускаем
+        
+        # Пытаемся понять, что это номер пары
+        num_str = str(first_cell).strip().rstrip('.,)').lstrip(' (')
+        if not num_str.isdigit():
+            # если не число — возможно заголовок дня или пусто → пропускаем, но не break
+            continue
+        
+        pair_num = num_str
+        
+        # Сдвиг столбцов под твою таблицу
+        subject   = row_values[1] if len(row_values) > 1 else ""   # B — предмет
+        teacher   = row_values[3] if len(row_values) > 3 else ""   # D — преподаватель
+        cabinet   = row_values[5] if len(row_values) > 5 else ""   # F — кабинет
+        
+        # Чистим от лишнего
+        subject = subject.replace('\n', ' ').strip()
+        teacher = teacher.replace('\n', ' ').strip()
+        cabinet = cabinet.replace('\n', ' ').strip()
+        
+        if subject or teacher or cabinet:  # если хоть что-то есть
+            line = f"{pair_num}. {subject}"
+            if teacher:
+                line += f"\nПреп: {teacher}"
+            if cabinet:
+                line += f"\nКаб: {cabinet}"
+            schedule.append(line)
 
     if not schedule:
-        return "Расписание не найдено."
-
-    return "\n".join(schedule)
-
+        return f"Расписание для {GROUP_NAME} не найдено или таблица имеет другую структуру."
+    
+    return "\n\n".join(schedule)  # двойной перенос для красоты
 
 # ================= TELEGRAM =================
 
