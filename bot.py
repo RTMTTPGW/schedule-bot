@@ -1,191 +1,126 @@
 import os
-import io
-import requests
-from datetime import datetime, timedelta
-from uuid import uuid4
-
-from aiogram import Bot, Dispatcher, types
-from aiogram.types import InlineQueryResultArticle, InputTextMessageContent
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
-from aiohttp import web
-
-from openpyxl import load_workbook
-
-
-# ================= ENV =================
+import re
+from datetime import datetime
+import telebot
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
 
 TOKEN = os.getenv("BOT_TOKEN")
-DRIVE_API_KEY = os.getenv("DRIVE_API_KEY")
+FOLDER_ID = os.getenv("FOLDER_ID")
 
-FOLDER_ID = "1fxehYVWNrEC5EoHnrzgaxoSyCDXCDTur"
-GROUP_NAME = "2-24 ОРП-1"
+bot = telebot.TeleBot(TOKEN)
 
-if not TOKEN:
-    raise ValueError("BOT_TOKEN не найден")
+# === Google API ===
+SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
+credentials = service_account.Credentials.from_service_account_file(
+    'credentials.json',
+    scopes=SCOPES
+)
 
-if not DRIVE_API_KEY:
-    raise ValueError("DRIVE_API_KEY не найден")
-
-
-# ================= GOOGLE DRIVE =================
-
-def find_file_id():
-    today = datetime.now()
-    dates = [
-        today + timedelta(days=1),
-        today,
-        today - timedelta(days=1),
-    ]
-
-    url = "https://www.googleapis.com/drive/v3/files"
-
-    params = {
-        "q": f"'{FOLDER_ID}' in parents",
-        "fields": "files(id, name)",
-        "key": DRIVE_API_KEY
-    }
-
-    response = requests.get(url, params=params)
-    data = response.json()
-    files = data.get("files", [])
-
-    for date in dates:
-        date_str = date.strftime("%d.%m.%Y")
-
-        for file in files:
-            if date_str in file["name"]:
-                return file["id"], date_str
-
-    return None, None
+drive_service = build('drive', 'v3', credentials=credentials)
+docs_service = build('docs', 'v1', credentials=credentials)
 
 
-def download_file(file_id):
-    url = f"https://www.googleapis.com/drive/v3/files/{file_id}/export"
+# === Поиск файла по дате ===
+def find_schedule_file(date_string):
+    results = drive_service.files().list(
+        q=f"'{FOLDER_ID}' in parents and trashed=false",
+        fields="files(id, name)"
+    ).execute()
 
-    params = {
-        "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "key": DRIVE_API_KEY
-    }
+    files = results.get('files', [])
 
-    response = requests.get(url, params=params)
+    for file in files:
+        if date_string in file['name']:
+            return file['id']
 
-    if response.status_code != 200:
-        raise Exception(f"Ошибка загрузки файла: {response.text}")
-
-    return io.BytesIO(response.content)
+    return None
 
 
-# ================= PARSE XLSX =================
+# === Получение текста из Google Docs ===
+def get_doc_text(doc_id):
+    document = docs_service.documents().get(documentId=doc_id).execute()
+    content = document.get('body').get('content')
 
-def parse_schedule(file_bytes, date_str):
-    wb = load_workbook(file_bytes)
-    sheet = wb.active
+    text = ""
 
-    schedule = []
-    found_date = False
-    found_group = False
+    for element in content:
+        if 'paragraph' in element:
+            for run in element['paragraph']['elements']:
+                if 'textRun' in run:
+                    text += run['textRun']['content']
 
-    target_group = GROUP_NAME.strip().lower()
+    return text
 
-    for row in sheet.iter_rows(values_only=True):
-        row_values = [str(cell).strip() if cell else "" for cell in row]
 
-        # 1️⃣ Сначала ищем нужную дату
-        if not found_date:
-            if any(date_str in cell for cell in row_values):
-                found_date = True
+# === Парсинг расписания ===
+def parse_schedule(text):
+    pairs = {}
+    current_pair = None
+
+    lines = text.split('\n')
+
+    for line in lines:
+        line = line.strip()
+
+        # Ищем номер пары
+        match = re.match(r"(\d)\s*пара", line.lower())
+        if match:
+            current_pair = int(match.group(1))
+            pairs[current_pair] = {
+                "subject": "",
+                "teacher": "",
+                "room": ""
+            }
             continue
 
-        # 2️⃣ После даты ищем группу
-        if found_date and not found_group:
-            if any(target_group in cell.lower() for cell in row_values):
-                found_group = True
-            continue
+        if current_pair:
+            if not pairs[current_pair]["subject"]:
+                pairs[current_pair]["subject"] = line
+            elif not pairs[current_pair]["teacher"]:
+                pairs[current_pair]["teacher"] = line
+            elif not pairs[current_pair]["room"]:
+                pairs[current_pair]["room"] = line
 
-        # 3️⃣ Если нашли и дату и группу — читаем пары
-        if found_group:
-            pair_number = row_values[0]
+    return pairs
 
-            if pair_number.isdigit():
-                subject = row_values[1] if len(row_values) > 1 else ""
-                teacher = row_values[4] if len(row_values) > 4 else ""
-                cabinet = row_values[6] if len(row_values) > 6 else ""
 
-                if subject.lower() == "нет" or subject == "":
-                    continue
-
-                schedule.append({
-                    "number": int(pair_number),
-                    "subject": subject,
-                    "teacher": teacher,
-                    "cabinet": cabinet
-                })
-
-            # Если началась новая дата — останавливаемся
-            elif any("." in cell and len(cell) >= 8 for cell in row_values):
-                break
-
-    if not schedule:
+# === Красивый вывод ===
+def format_schedule(date_string, pairs):
+    if not pairs:
         return "Расписание не найдено."
 
-    schedule.sort(key=lambda x: x["number"])
+    text = f"📅 Расписание на {date_string}\n"
+    text += "━━━━━━━━━━━━━━━━━━\n\n"
 
-    result = f"📅 Расписание на {date_str}\n\n"
+    for number in sorted(pairs.keys()):
+        pair = pairs[number]
 
-    for lesson in schedule:
-        result += (
-            f"🔹 {lesson['number']} пара\n"
-            f"   📖 {lesson['subject']}\n"
-            f"   👩‍🏫 {lesson['teacher']}\n"
-            f"   🏫 Кабинет: {lesson['cabinet']}\n\n"
-        )
+        text += f"🔹 {number} пара\n"
+        text += f"   📖 {pair['subject']}\n"
+        text += f"   👩‍🏫 {pair['teacher']}\n"
+        text += f"   🏫 {pair['room']}\n\n"
 
-    return result
-
+    return text
 
 
-# ================= TELEGRAM =================
+# === Команда /today ===
+@bot.message_handler(commands=['today'])
+def today(message):
+    today_date = datetime.now().strftime("%d.%m.%Y")
 
-bot = Bot(token=TOKEN)
-dp = Dispatcher()
+    file_id = find_schedule_file(today_date)
 
+    if not file_id:
+        bot.send_message(message.chat.id, "Расписание не найдено.")
+        return
 
-@dp.inline_query()
-async def inline_handler(inline_query: types.InlineQuery):
-    try:
-        file_id, date_str = find_file_id()
+    text = get_doc_text(file_id)
+    pairs = parse_schedule(text)
+    formatted = format_schedule(today_date, pairs)
 
-        if not file_id:
-            text = "Файл расписания не найден."
-        else:
-            file_bytes = download_file(file_id)
-            text = parse_schedule(file_bytes, date_str)
-
-    except Exception as e:
-        text = f"Ошибка: {str(e)}"
-
-    result = InlineQueryResultArticle(
-        id=str(uuid4()),
-        title="Расписание 2-24 ОРП-1",
-        input_message_content=InputTextMessageContent(message_text=text)
-    )
-
-    await inline_query.answer([result], cache_time=1)
+    bot.send_message(message.chat.id, formatted)
 
 
-# ================= WEBHOOK (Render) =================
-
-async def on_startup(app):
-    webhook_url = os.getenv("RENDER_EXTERNAL_URL")
-    await bot.set_webhook(webhook_url)
-
-
-app = web.Application()
-app.on_startup.append(on_startup)
-
-SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path="/")
-setup_application(app, dp, bot=bot)
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    web.run_app(app, host="0.0.0.0", port=port)
+# === Запуск ===
+bot.infinity_polling()
