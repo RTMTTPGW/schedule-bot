@@ -82,51 +82,54 @@ def parse_schedule(file_bytes, date_str):
     sheet = wb.active
 
     schedule = []
+    found_date = False
     found_group = False
+
     target_group = GROUP_NAME.strip().lower()
 
     for row in sheet.iter_rows(values_only=True):
         row_values = [str(cell).strip() if cell else "" for cell in row]
 
-        # Ищем строку с группой
-        if not found_group:
+        # 1️⃣ Сначала ищем нужную дату
+        if not found_date:
+            if any(date_str in cell for cell in row_values):
+                found_date = True
+            continue
+
+        # 2️⃣ После даты ищем группу
+        if found_date and not found_group:
             if any(target_group in cell.lower() for cell in row_values):
                 found_group = True
             continue
 
-        # Если снова встретили строку с группой — прекращаем
-        if any(target_group in cell.lower() for cell in row_values):
-            break
+        # 3️⃣ Если нашли и дату и группу — читаем пары
+        if found_group:
+            pair_number = row_values[0]
 
-        pair_number = row_values[0]
+            if pair_number.isdigit():
+                subject = row_values[1] if len(row_values) > 1 else ""
+                teacher = row_values[4] if len(row_values) > 4 else ""
+                cabinet = row_values[6] if len(row_values) > 6 else ""
 
-        if pair_number.isdigit():
-            subject = row_values[1] if len(row_values) > 1 else ""
-            teacher = row_values[4] if len(row_values) > 4 else ""
-            cabinet = row_values[6] if len(row_values) > 6 else ""
+                if subject.lower() == "нет" or subject == "":
+                    continue
 
-            # Пропускаем мусорные строки
-            if subject.lower() == "нет" or subject == "":
-                continue
+                schedule.append({
+                    "number": int(pair_number),
+                    "subject": subject,
+                    "teacher": teacher,
+                    "cabinet": cabinet
+                })
 
-            schedule.append({
-                "number": int(pair_number),
-                "subject": subject,
-                "teacher": teacher,
-                "cabinet": cabinet
-            })
-
-        # Если дошли до пустой строки после пар — останавливаемся
-        elif schedule:
-            break
+            # Если началась новая дата — останавливаемся
+            elif any("." in cell and len(cell) >= 8 for cell in row_values):
+                break
 
     if not schedule:
         return "Расписание не найдено."
 
-    # Сортируем по номеру пары
     schedule.sort(key=lambda x: x["number"])
 
-    # Красивый вывод
     result = f"📅 Расписание на {date_str}\n\n"
 
     for lesson in schedule:
@@ -138,6 +141,7 @@ def parse_schedule(file_bytes, date_str):
         )
 
     return result
+
 
 
 # ================= TELEGRAM =================
