@@ -1,7 +1,6 @@
 import os
 import time
 import logging
-from datetime import date
 
 from telegram import Update
 from telegram.ext import (
@@ -14,6 +13,7 @@ from db import (
     init_db,
     add_subscriber, remove_subscriber, get_all_subscribers,
     get_gif_file_id, save_gif_file_id,
+    set_chat_group, get_chat_group,
 )
 from sheets import get_latest_file_id, get_today_file_id, parse_schedule, format_schedule
 from scheduler import start_scheduler
@@ -24,11 +24,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-TOKEN      = os.environ["BOT_TOKEN"]
-GROUP_NAME = os.environ.get("GROUP_NAME", "")
-# ID группы куда слать алерты об ошибках Drive (задаётся в Railway)
+TOKEN         = os.environ["BOT_TOKEN"]
+# Группа по умолчанию — используется если пользователь не задал свою
+DEFAULT_GROUP = os.environ.get("GROUP_NAME", "")
 ALERT_CHAT_ID = os.environ.get("ALERT_CHAT_ID", "")
-GIF_PATH   = os.path.join(os.path.dirname(__file__), "emoji.mp4")
+GIF_PATH      = os.path.join(os.path.dirname(__file__), "emoji.mp4")
 
 # ─── Премиум эмодзи ───────────────────────────────────────────────────────────
 WAVE  = '<tg-emoji emoji-id="5319016550248751722">👋</tg-emoji>'
@@ -40,14 +40,12 @@ CHECK = '<tg-emoji emoji-id="5206607081334906820">✔️</tg-emoji>'
 CROSS = '<tg-emoji emoji-id="5210952531676504517">❌</tg-emoji>'
 CLOCK = '<tg-emoji emoji-id="5386367538735104399">⌛</tg-emoji>'
 
-# ─── Cooldown ─────────────────────────────────────────────────────────────────
-COOLDOWN_SECONDS = int(os.environ.get("COOLDOWN_SECONDS", "10"))
-# (chat_id, command) -> timestamp последнего вызова этой команды
+# ─── Cooldown (per chat + command) ────────────────────────────────────────────
+COOLDOWN_SECONDS = int(os.environ.get("COOLDOWN_SECONDS", "30"))
 _last_request: dict[tuple, float] = {}
 
 
 def _check_cooldown(chat_id: int, command: str) -> int | None:
-    """Возвращает сколько секунд ждать до повтора той же команды, или None если можно."""
     key = (chat_id, command)
     last = _last_request.get(key)
     if last is None:
@@ -60,7 +58,7 @@ def _set_cooldown(chat_id: int, command: str):
     _last_request[(chat_id, command)] = time.time()
 
 
-# ─── GIF file_id (хранится в SQLite) ─────────────────────────────────────────
+# ─── GIF ──────────────────────────────────────────────────────────────────────
 _gif_file_id: str = ""
 
 
@@ -71,27 +69,20 @@ def _get_gif_id() -> str:
     return _gif_file_id
 
 
-# ─── Отправка гифки с текстом одним сообщением ───────────────────────────────
-
 async def _send_with_gif(bot, chat_id: int, text: str):
-    """Отправляет гифку + текст одним сообщением (caption)."""
     global _gif_file_id
     gif_id = _get_gif_id()
     try:
         if gif_id:
             await bot.send_animation(
-                chat_id=chat_id,
-                animation=gif_id,
-                caption=text,
-                parse_mode="HTML",
+                chat_id=chat_id, animation=gif_id,
+                caption=text, parse_mode="HTML",
             )
         else:
             with open(GIF_PATH, "rb") as f:
                 msg = await bot.send_animation(
-                    chat_id=chat_id,
-                    animation=f,
-                    caption=text,
-                    parse_mode="HTML",
+                    chat_id=chat_id, animation=f,
+                    caption=text, parse_mode="HTML",
                 )
             _gif_file_id = msg.animation.file_id
             save_gif_file_id(_gif_file_id)
@@ -101,14 +92,19 @@ async def _send_with_gif(bot, chat_id: int, text: str):
         await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
 
 
-# ─── Хелпер получения и отправки расписания ──────────────────────────────────
+# ─── Хелперы ──────────────────────────────────────────────────────────────────
 
-async def _fetch_and_reply(msg, bot, chat_id: int, file_id: str, prefix: str = ""):
-    """Парсит файл и отправляет расписание. msg — сообщение-заглушка для удаления."""
-    data = parse_schedule(file_id, GROUP_NAME)
+def _resolve_group(chat_id: int) -> str | None:
+    """Возвращает группу для чата: своя → дефолтная → None."""
+    return get_chat_group(chat_id) or DEFAULT_GROUP or None
+
+
+async def _fetch_and_reply(msg, bot, chat_id: int, file_id: str, group: str, prefix: str = ""):
+    data = parse_schedule(file_id, group)
     if not data:
         await msg.edit_text(
-            f'{CROSS} Группа <b>{GROUP_NAME}</b> не найдена в файле.',
+            f'{CROSS} Группа <b>{group}</b> не найдена в файле.\n'
+            f'Проверь название командой /setgroup',
             parse_mode="HTML",
         )
         return
@@ -120,24 +116,58 @@ async def _fetch_and_reply(msg, bot, chat_id: int, file_id: str, prefix: str = "
 # ─── Команды ──────────────────────────────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    group = _resolve_group(chat_id)
+    group_line = f"Текущая группа: <b>{group}</b>" if group else "Группа не задана — используй /setgroup"
     await update.message.reply_text(
         f"{WAVE} Привет! Я бот расписания.\n\n"
+        f"{group_line}\n\n"
         f"{CAL} /today — расписание на сегодня\n"
         f"{NEW} /new — последнее новое расписание\n"
+        f"🔧 /setgroup &lt;название&gt; — выбрать группу\n"
         f"{BELL} /subscribe — подписаться на авторассылку\n"
         f"{CROSS} /unsubscribe — отписаться",
         parse_mode="HTML",
     )
 
 
-async def cmd_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Расписание из последнего файла с датой <= сегодня."""
+async def cmd_setgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
+    group = " ".join(context.args).strip() if context.args else ""
+
+    if not group:
+        current = _resolve_group(chat_id)
+        current_str = f"Сейчас: <b>{current}</b>" if current else "Группа не задана"
+        await update.message.reply_text(
+            f"Использование: /setgroup &lt;название группы&gt;\n"
+            f"Например: /setgroup 2-24 ОРП-1\n\n"
+            f"{current_str}",
+            parse_mode="HTML",
+        )
+        return
+
+    set_chat_group(chat_id, group)
+    await update.message.reply_text(
+        f"{CHECK} Группа установлена: <b>{group}</b>\n"
+        f"Теперь /today и /new будут показывать расписание этой группы.",
+        parse_mode="HTML",
+    )
+
+
+async def cmd_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    group = _resolve_group(chat_id)
+    if not group:
+        await update.message.reply_text(
+            f"{CROSS} Группа не задана. Используй /setgroup &lt;название&gt;",
+            parse_mode="HTML",
+        )
+        return
+
     wait = _check_cooldown(chat_id, "today")
     if wait:
         await update.message.reply_text(
-            f"{CLOCK} Подожди ещё <b>{wait} сек.</b>",
-            parse_mode="HTML",
+            f"{CLOCK} Подожди ещё <b>{wait} сек.</b>", parse_mode="HTML"
         )
         return
 
@@ -148,20 +178,26 @@ async def cmd_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text(f"{CROSS} Файлов в папке Drive не найдено.", parse_mode="HTML")
             return
         _set_cooldown(chat_id, "today")
-        await _fetch_and_reply(msg, context.bot, chat_id, file_id)
+        await _fetch_and_reply(msg, context.bot, chat_id, file_id, group)
     except Exception as e:
         logger.exception("Ошибка /today")
         await msg.edit_text(f"{WARN} Ошибка: {e}", parse_mode="HTML")
 
 
 async def cmd_new(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Расписание из последнего загруженного файла (может быть на будущий день)."""
     chat_id = update.effective_chat.id
+    group = _resolve_group(chat_id)
+    if not group:
+        await update.message.reply_text(
+            f"{CROSS} Группа не задана. Используй /setgroup &lt;название&gt;",
+            parse_mode="HTML",
+        )
+        return
+
     wait = _check_cooldown(chat_id, "new")
     if wait:
         await update.message.reply_text(
-            f"{CLOCK} Подожди ещё <b>{wait} сек.</b>",
-            parse_mode="HTML",
+            f"{CLOCK} Подожди ещё <b>{wait} сек.</b>", parse_mode="HTML"
         )
         return
 
@@ -172,17 +208,26 @@ async def cmd_new(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text(f"{CROSS} Файлов в папке Drive не найдено.", parse_mode="HTML")
             return
         _set_cooldown(chat_id, "new")
-        await _fetch_and_reply(msg, context.bot, chat_id, file_id)
+        await _fetch_and_reply(msg, context.bot, chat_id, file_id, group)
     except Exception as e:
         logger.exception("Ошибка /new")
         await msg.edit_text(f"{WARN} Ошибка: {e}", parse_mode="HTML")
 
 
 async def cmd_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    add_subscriber(update.effective_chat.id)
+    chat_id = update.effective_chat.id
+    group = _resolve_group(chat_id)
+    if not group:
+        await update.message.reply_text(
+            f"{CROSS} Сначала задай группу: /setgroup &lt;название&gt;",
+            parse_mode="HTML",
+        )
+        return
+    add_subscriber(chat_id)
     await update.message.reply_text(
         f"{CHECK} Подписка оформлена!\n"
-        "Когда появится новый файл расписания на будущий день — пришлю автоматически.",
+        f"Группа: <b>{group}</b>\n"
+        f"Когда появится новое расписание — пришлю автоматически.",
         parse_mode="HTML",
     )
 
@@ -194,32 +239,78 @@ async def cmd_unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ─── Авторассылка ─────────────────────────────────────────────────────────────
 
-async def broadcast(application: Application, sched_data: dict):
-    text = f"{NEW} <b>Новое расписание!</b>\n\n" + format_schedule(sched_data)
-    for chat_id in get_all_subscribers():
+async def broadcast(application: Application, file_id: str):
+    """Рассылает новое расписание каждому подписчику его группы."""
+    subscribers = get_all_subscribers()
+    # Кэш: group_name -> parsed data чтобы не парсить один файл 100 раз
+    cache: dict[str, dict | None] = {}
+
+    for sub in subscribers:
+        chat_id   = sub["chat_id"]
+        group     = sub["group_name"] or DEFAULT_GROUP
+        if not group:
+            continue
+
+        if group not in cache:
+            try:
+                cache[group] = parse_schedule(file_id, group)
+            except Exception as e:
+                logger.warning("Ошибка парсинга группы %s: %s", group, e)
+                cache[group] = None
+
+        data = cache[group]
+        if not data:
+            continue
+
+        text = f"{NEW} <b>Новое расписание!</b>\n\n" + format_schedule(data)
         try:
             await _send_with_gif(application.bot, chat_id, text)
         except Exception as e:
             logger.warning("Не удалось отправить chat_id=%s: %s", chat_id, e)
 
 
-async def broadcast_changed(application: Application, sched_data: dict, diff_text: str):
-    d = sched_data.get("date", "")
-    day = sched_data.get("day", "")
-    day_str = f", {day}" if day else ""
-    if diff_text:
-        text = (
-            f"{WARN} <b>Расписание на {d}{day_str} изменилось!</b>\n\n"
-            + diff_text
-            + "\n\n📋 Актуальное расписание:\n\n"
-            + format_schedule(sched_data)
-        )
-    else:
-        text = (
-            f"{WARN} <b>Расписание на {d}{day_str} обновлено!</b>\n\n"
-            + format_schedule(sched_data)
-        )
-    for chat_id in get_all_subscribers():
+async def broadcast_changed(application: Application, file_id: str, diffs: dict[str, str]):
+    """
+    Рассылает изменения расписания.
+    diffs: {group_name: diff_text}
+    """
+    subscribers = get_all_subscribers()
+    cache: dict[str, dict | None] = {}
+
+    for sub in subscribers:
+        chat_id = sub["chat_id"]
+        group   = sub["group_name"] or DEFAULT_GROUP
+        if not group:
+            continue
+
+        if group not in cache:
+            try:
+                cache[group] = parse_schedule(file_id, group)
+            except Exception:
+                cache[group] = None
+
+        data = cache[group]
+        if not data:
+            continue
+
+        diff_text = diffs.get(group, "")
+        d       = data.get("date", "")
+        day     = data.get("day", "")
+        day_str = f", {day}" if day else ""
+
+        if diff_text:
+            text = (
+                f"{WARN} <b>Расписание на {d}{day_str} изменилось!</b>\n\n"
+                + diff_text
+                + "\n\n📋 Актуальное расписание:\n\n"
+                + format_schedule(data)
+            )
+        else:
+            text = (
+                f"{WARN} <b>Расписание на {d}{day_str} обновлено!</b>\n\n"
+                + format_schedule(data)
+            )
+
         try:
             await _send_with_gif(application.bot, chat_id, text)
         except Exception as e:
@@ -227,7 +318,6 @@ async def broadcast_changed(application: Application, sched_data: dict, diff_tex
 
 
 async def alert_drive_error(application: Application, error_msg: str):
-    """Шлёт алерт об ошибке Drive в группу где бот."""
     if not ALERT_CHAT_ID:
         return
     try:
@@ -248,6 +338,7 @@ def main():
     app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start",       cmd_start))
+    app.add_handler(CommandHandler("setgroup",    cmd_setgroup))
     app.add_handler(CommandHandler("today",       cmd_today))
     app.add_handler(CommandHandler("new",         cmd_new))
     app.add_handler(CommandHandler("subscribe",   cmd_subscribe))
@@ -255,7 +346,7 @@ def main():
 
     start_scheduler(app, broadcast, broadcast_changed, alert_drive_error)
 
-    logger.info("Бот запущен, группа: %s", GROUP_NAME)
+    logger.info("Бот запущен, дефолтная группа: %s", DEFAULT_GROUP)
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
