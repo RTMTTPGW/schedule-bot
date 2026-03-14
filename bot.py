@@ -3,8 +3,11 @@ import logging
 
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
-    Application, CommandHandler, MessageHandler,
-    filters, ContextTypes,
+    Application,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
 )
 
 from db import init_db, add_subscriber, remove_subscriber, get_all_subscribers
@@ -18,14 +21,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 TOKEN      = os.environ["BOT_TOKEN"]
-GROUP_NAME = os.environ.get("GROUP_NAME", "")  # например: "2-24 ОРП-1"
+GROUP_NAME = os.environ.get("GROUP_NAME", "")
 
 
 # ─── Клавиатура ───────────────────────────────────────────────────────────────
 
 KEYBOARD = ReplyKeyboardMarkup(
     [
-        [KeyboardButton("📅 Расписание на сегодня")],
+        [KeyboardButton("📅 Расписание")],
         [KeyboardButton("🔔 Подписаться"), KeyboardButton("🔕 Отписаться")],
     ],
     resize_keyboard=True,
@@ -33,30 +36,33 @@ KEYBOARD = ReplyKeyboardMarkup(
 )
 
 
-# ─── Хелпер ───────────────────────────────────────────────────────────────────
+# ─── Логика получения расписания ──────────────────────────────────────────────
 
-async def _send_schedule(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
-    """Достаёт последний файл, парсит и отправляет расписание в указанный чат."""
-    file_id = get_latest_file_id()
-    if not file_id:
-        await context.bot.send_message(chat_id, "❌ Файлов в папке Drive не найдено.")
-        return
+async def _fetch_and_send(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        file_id = get_latest_file_id()
+        if not file_id:
+            await context.bot.send_message(chat_id, "❌ Файлов в папке Drive не найдено.")
+            return
 
-    data = parse_schedule(file_id, GROUP_NAME)
-    if not data:
+        data = parse_schedule(file_id, GROUP_NAME)
+        if not data:
+            await context.bot.send_message(
+                chat_id,
+                f"❌ Группа <b>{GROUP_NAME}</b> не найдена в файле.\n"
+                "Проверь переменную GROUP_NAME.",
+                parse_mode="HTML",
+            )
+            return
+
         await context.bot.send_message(
             chat_id,
-            f"❌ Группа <b>{GROUP_NAME}</b> не найдена в файле.\n"
-            "Проверь переменную GROUP_NAME.",
+            format_schedule(data),
             parse_mode="HTML",
         )
-        return
-
-    await context.bot.send_message(
-        chat_id,
-        format_schedule(data),
-        parse_mode="HTML",
-    )
+    except Exception as e:
+        logger.exception("Ошибка при получении расписания")
+        await context.bot.send_message(chat_id, f"⚠️ Ошибка: {e}")
 
 
 # ─── Команды ──────────────────────────────────────────────────────────────────
@@ -64,10 +70,9 @@ async def _send_schedule(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Привет! Я бот расписания.\n\n"
-        "Команды:\n"
-        "/today — расписание из последнего файла\n"
-        "/subscribe — подписаться на авторассылку\n"
-        "/unsubscribe — отписаться",
+        "📅 /today — расписание из последнего файла\n"
+        "🔔 /subscribe — подписаться на авторассылку\n"
+        "🔕 /unsubscribe — отписаться",
         reply_markup=KEYBOARD,
     )
 
@@ -96,7 +101,8 @@ async def cmd_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     add_subscriber(update.effective_chat.id)
     await update.message.reply_text(
-        "✅ Подписка оформлена! Когда появится новый файл расписания — пришлю автоматически.",
+        "✅ Подписка оформлена!\n"
+        "Когда появится новый файл расписания на будущий день — пришлю автоматически.",
         reply_markup=KEYBOARD,
     )
 
@@ -110,7 +116,7 @@ async def cmd_unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
-    if text == "📅 Расписание на сегодня":
+    if text == "📅 Расписание":
         await cmd_today(update, context)
     elif text == "🔔 Подписаться":
         await cmd_subscribe(update, context)
@@ -118,10 +124,9 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await cmd_unsubscribe(update, context)
 
 
-# ─── Авторассылка ─────────────────────────────────────────────────────────────
+# ─── Авторассылка (вызывается из scheduler) ───────────────────────────────────
 
 async def broadcast(application: Application, file_id: str):
-    """Рассылает расписание из нового файла всем подписчикам."""
     logger.info("Рассылка нового файла: %s", file_id)
     try:
         data = parse_schedule(file_id, GROUP_NAME)
@@ -144,13 +149,20 @@ async def broadcast(application: Application, file_id: str):
 
 def main():
     init_db()
-    app = Application.builder().token(TOKEN).build()
+
+    app = (
+        Application.builder()
+        .token(TOKEN)
+        .build()
+    )
 
     app.add_handler(CommandHandler("start",       cmd_start))
     app.add_handler(CommandHandler("today",       cmd_today))
     app.add_handler(CommandHandler("subscribe",   cmd_subscribe))
     app.add_handler(CommandHandler("unsubscribe", cmd_unsubscribe))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_buttons))
+    app.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_buttons)
+    )
 
     start_scheduler(app, broadcast)
 
