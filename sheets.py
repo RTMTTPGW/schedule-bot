@@ -56,10 +56,14 @@ def get_latest_file_id() -> str | None:
 
 def download_xlsx(file_id: str) -> bytes:
     """
-    Скачивает публичный xlsx по file_id.
-    Сначала пробует webContentLink через API, потом прямой usercontent URL.
+    Скачивает Google Sheets файл экспортируя его как xlsx.
+    Файлы в папке — нативные Google Sheets, их нельзя скачать напрямую,
+    нужно использовать export URL.
     """
-    session = requests.Session()
+    # Экспортируем Google Sheets → xlsx через Drive export URL
+    # Это работает для публичных файлов без авторизации
+    export_url = f"https://docs.google.com/spreadsheets/d/{file_id}/export"
+    params = {"format": "xlsx"}
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -67,39 +71,19 @@ def download_xlsx(file_id: str) -> bytes:
             "Chrome/120.0.0.0 Safari/537.36"
         )
     }
-
-    # Шаг 1: получаем webContentLink через API — самый надёжный способ
-    try:
-        meta = session.get(
-            f"https://www.googleapis.com/drive/v3/files/{file_id}",
-            params={"fields": "webContentLink", "key": GOOGLE_API_KEY},
-            headers=headers,
-            timeout=REQUEST_TIMEOUT,
-        )
-        meta.raise_for_status()
-        web_link = meta.json().get("webContentLink", "")
-        if web_link:
-            resp = session.get(web_link, headers=headers, timeout=REQUEST_TIMEOUT, allow_redirects=True)
-            if resp.status_code == 200 and resp.content[:4] == b"PK\x03\x04":
-                logger.info("Скачан через webContentLink: %s, %d байт", file_id, len(resp.content))
-                return resp.content
-    except Exception as e:
-        logger.warning("webContentLink не сработал: %s", e)
-
-    # Шаг 2: fallback через usercontent с confirm=t
-    resp = session.get(
-        "https://drive.usercontent.google.com/download",
-        params={"id": file_id, "export": "download", "confirm": "t"},
-        headers=headers,
-        timeout=REQUEST_TIMEOUT,
-        allow_redirects=True,
-    )
+    session = requests.Session()
+    resp = session.get(export_url, params=params, headers=headers,
+                       timeout=REQUEST_TIMEOUT, allow_redirects=True)
     resp.raise_for_status()
 
+    # Проверяем что получили xlsx (начинается с PK — zip-формат)
     if resp.content[:4] != b"PK\x03\x04":
-        raise Exception(f"Получен не xlsx (первые байты: {resp.content[:20]})")
+        raise Exception(
+            f"Ожидался xlsx, получено {len(resp.content)} байт. "
+            f"Начало: {resp.content[:50]}"
+        )
 
-    logger.info("Скачан через usercontent: %s, %d байт", file_id, len(resp.content))
+    logger.info("Экспортирован файл %s как xlsx, %d байт", file_id, len(resp.content))
     return resp.content
 
 
