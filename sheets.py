@@ -209,18 +209,8 @@ def parse_schedule(file_id: str, group_name: str) -> dict | None:
     }
 
 
+
 # ─── Форматирование ───────────────────────────────────────────────────────────
-
-PAIR_TIMES = {
-    "1": "08:00–09:35",
-    "2": "09:45–11:20",
-    "3": "11:40–13:15",
-    "4": "13:25–15:00",
-    "5": "15:20–16:55",
-    "6": "17:05–18:40",
-    "7": "18:50–20:25",
-}
-
 
 def format_schedule(data: dict) -> str:
     date  = data.get("date", "")
@@ -239,13 +229,13 @@ def format_schedule(data: dict) -> str:
 
     lines = [header]
     for p in pairs:
-        time = PAIR_TIMES.get(str(p["num"]), "")
-        time_str = f"  🕐 <i>{time}</i>" if time else ""
-        block = f"\n🔹 <b>{p['num']} пара</b>{time_str}\n   📖 {p['subject']}"
+        block = f"\n🔹 <b>{p['num']} пара</b>\n   📖 {p['subject']}"
         if p["teacher"]:
-            block += f"\n   👩‍🏫 {p['teacher']}"
+            block += f"\n   👩\u200d🏫 {p['teacher']}"
         if p["room"]:
             block += f"\n   🏫 {p['room']}"
         lines.append(block)
+
+    return "\n".join(lines)
 
     return "\n".join(lines)
