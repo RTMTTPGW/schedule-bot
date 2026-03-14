@@ -52,6 +52,35 @@ def get_latest_file_id() -> str | None:
     return files[0]["id"] if files else None
 
 
+def get_today_file_id() -> str | None:
+    """
+    Возвращает id последнего файла у которого дата <= сегодня.
+    Перебирает файлы от новых к старым, возвращает первый подходящий.
+    """
+    from datetime import date
+    files = get_drive_files()
+    today = date.today()
+    for file in files:
+        file_date = _date_from_name(file.get("name", ""))
+        if file_date is not None and file_date <= today:
+            return file["id"]
+    # Если ни один не подошёл — берём последний
+    return files[0]["id"] if files else None
+
+
+def _date_from_name(name: str):
+    """Извлекает дату из имени файла вида '16.03.2026...' или любого с датой."""
+    import re
+    from datetime import date
+    m = re.search(r'(\d{2})\.(\d{2})\.(\d{4})', name)
+    if m:
+        try:
+            return date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+        except ValueError:
+            pass
+    return None
+
+
 # ─── Скачивание xlsx ──────────────────────────────────────────────────────────
 
 def download_xlsx(file_id: str) -> bytes:
