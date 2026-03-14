@@ -20,31 +20,65 @@ logger = logging.getLogger(__name__)
 
 TOKEN      = os.environ["BOT_TOKEN"]
 GROUP_NAME = os.environ.get("GROUP_NAME", "")
+# После первой отправки гифки Railway сохранит сюда file_id автоматически.
+# Можно также задать вручную если уже знаешь file_id.
+GIF_FILE_ID = os.environ.get("GIF_FILE_ID", "")
+GIF_PATH    = os.path.join(os.path.dirname(__file__), "emoji.mp4")
 
 # ─── Премиум эмодзи ───────────────────────────────────────────────────────────
+WAVE  = '<tg-emoji emoji-id="5319016550248751722">👋</tg-emoji>'
+CAL   = '<tg-emoji emoji-id="5274055917766202507">🗓</tg-emoji>'
+BELL  = '<tg-emoji emoji-id="5458603043203327669">🔔</tg-emoji>'
 WARN  = '<tg-emoji emoji-id="5447644880824181073">⚠️</tg-emoji>'
 NEW   = '<tg-emoji emoji-id="5382357040008021292">🆕</tg-emoji>'
 CHECK = '<tg-emoji emoji-id="5206607081334906820">✔️</tg-emoji>'
 CROSS = '<tg-emoji emoji-id="5210952531676504517">❌</tg-emoji>'
+CLOCK = '<tg-emoji emoji-id="5386367538735104399">⌛</tg-emoji>'
+
+
+# ─── Хелпер отправки гифки ────────────────────────────────────────────────────
+
+# Кэш file_id чтобы не перечитывать файл каждый раз
+_gif_file_id: str = GIF_FILE_ID
+
+
+async def _send_gif(bot, chat_id: int):
+    """Отправляет гифку. При первой отправке загружает файл и кэширует file_id."""
+    global _gif_file_id
+    try:
+        if _gif_file_id:
+            await bot.send_animation(chat_id=chat_id, animation=_gif_file_id)
+        else:
+            with open(GIF_PATH, "rb") as f:
+                msg = await bot.send_animation(chat_id=chat_id, animation=f)
+            _gif_file_id = msg.animation.file_id
+            logger.info("Гифка загружена, file_id: %s", _gif_file_id)
+            logger.info("Добавь в Railway переменную: GIF_FILE_ID=%s", _gif_file_id)
+    except Exception as e:
+        logger.warning("Не удалось отправить гифку: %s", e)
 
 
 # ─── Команды ──────────────────────────────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 Привет! Я бот расписания.\n\n"
-        "/today — расписание из последнего файла\n"
-        "/subscribe — подписаться на авторассылку\n"
-        "/unsubscribe — отписаться"
+        f"{WAVE} Привет! Я бот расписания.\n\n"
+        f"{CAL} /today — расписание из последнего файла\n"
+        f"{BELL} /subscribe — подписаться на авторассылку\n"
+        f"{CROSS} /unsubscribe — отписаться",
+        parse_mode="HTML",
     )
 
 
 async def cmd_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("⏳ Загружаю расписание...")
+    msg = await update.message.reply_text(
+        f"{CLOCK} Загружаю расписание...",
+        parse_mode="HTML",
+    )
     try:
         file_id = get_latest_file_id()
         if not file_id:
-            await msg.edit_text(f"{CROSS} Файлов в папке Drive не найдено.")
+            await msg.edit_text(f"{CROSS} Файлов в папке Drive не найдено.", parse_mode="HTML")
             return
         data = parse_schedule(file_id, GROUP_NAME)
         if not data:
@@ -55,6 +89,7 @@ async def cmd_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         await msg.edit_text(format_schedule(data), parse_mode="HTML")
+        await _send_gif(context.bot, update.effective_chat.id)
     except Exception as e:
         logger.exception("Ошибка /today")
         await msg.edit_text(f"{WARN} Ошибка: {e}", parse_mode="HTML")
@@ -85,6 +120,7 @@ async def broadcast(application: Application, sched_data: dict):
     for chat_id in get_all_subscribers():
         try:
             await application.bot.send_message(chat_id, text, parse_mode="HTML")
+            await _send_gif(application.bot, chat_id)
         except Exception as e:
             logger.warning("Не удалось отправить chat_id=%s: %s", chat_id, e)
 
@@ -111,6 +147,7 @@ async def broadcast_changed(application: Application, sched_data: dict, diff_tex
     for chat_id in get_all_subscribers():
         try:
             await application.bot.send_message(chat_id, text, parse_mode="HTML")
+            await _send_gif(application.bot, chat_id)
         except Exception as e:
             logger.warning("Не удалось отправить chat_id=%s: %s", chat_id, e)
 
