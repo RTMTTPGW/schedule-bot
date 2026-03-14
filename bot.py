@@ -39,6 +39,7 @@ NEW   = '<tg-emoji emoji-id="5382357040008021292">🆕</tg-emoji>'
 CHECK = '<tg-emoji emoji-id="5206607081334906820">✔️</tg-emoji>'
 CROSS = '<tg-emoji emoji-id="5210952531676504517">❌</tg-emoji>'
 CLOCK = '<tg-emoji emoji-id="5386367538735104399">⌛</tg-emoji>'
+PIN   = '<tg-emoji emoji-id="5397782960512444700">📌</tg-emoji>'
 
 # ─── Cooldown (per chat + command) ────────────────────────────────────────────
 COOLDOWN_SECONDS = int(os.environ.get("COOLDOWN_SECONDS", "30"))
@@ -118,13 +119,27 @@ async def _fetch_and_reply(msg, bot, chat_id: int, file_id: str, group: str, pre
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     group = _resolve_group(chat_id)
-    group_line = f"Текущая группа: <b>{group}</b>" if group else "Группа не задана — используй /setgroup"
+
+    if not group:
+        await update.message.reply_text(
+            f"{WAVE} Привет! Я бот расписания.\n\n"
+            f"{PIN} <b>Для начала выбери свою группу:</b>\n"
+            f"/setgroup &lt;название&gt;\n\n"
+            f"Название группы пишется точно так же как в таблице расписания — "
+            f"с дефисами, пробелами и цифрами. Например:\n"
+            f"<code>/setgroup 2-24 ОРП-1</code>\n\n"
+            f"❗ Регистр и пробелы важны — скопируй название прямо из таблицы "
+            f"если не уверен.",
+            parse_mode="HTML",
+        )
+        return
+
     await update.message.reply_text(
         f"{WAVE} Привет! Я бот расписания.\n\n"
-        f"{group_line}\n\n"
+        f"Текущая группа: <b>{group}</b>\n\n"
         f"{CAL} /today — расписание на сегодня\n"
         f"{NEW} /new — последнее новое расписание\n"
-        f"🔧 /setgroup &lt;название&gt; — выбрать группу\n"
+        f"🔧 /setgroup &lt;название&gt; — сменить группу\n"
         f"{BELL} /subscribe — подписаться на авторассылку\n"
         f"{CROSS} /unsubscribe — отписаться",
         parse_mode="HTML",
@@ -147,6 +162,26 @@ async def cmd_setgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     set_chat_group(chat_id, group)
+
+    # Проверяем что группа реально есть в последнем файле
+    try:
+        from sheets import get_latest_file_id, parse_schedule
+        file_id = get_latest_file_id()
+        if file_id:
+            test = parse_schedule(file_id, group)
+            if not test:
+                await update.message.reply_text(
+                    f"{WARN} Группа <b>{group}</b> не найдена в последнем файле расписания.\n\n"
+                    f"Возможные причины:\n"
+                    f"— опечатка в названии\n"
+                    f"— группа пишется иначе чем в таблице\n\n"
+                    f"Проверь название прямо в таблице и попробуй снова.",
+                    parse_mode="HTML",
+                )
+                return
+    except Exception:
+        pass  # Если проверка упала — не блокируем, просто сохраняем
+
     await update.message.reply_text(
         f"{CHECK} Группа установлена: <b>{group}</b>\n"
         f"Теперь /today и /new будут показывать расписание этой группы.",
