@@ -38,12 +38,12 @@ async def cmd_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         file_id = get_latest_file_id()
         if not file_id:
-            await msg.edit_text("❌ Файлов в папке Drive не найдено.")
+            await msg.edit_text("<tg-emoji emoji-id="5210952531676504517">❌</tg-emoji> Файлов в папке Drive не найдено.")
             return
         data = parse_schedule(file_id, GROUP_NAME)
         if not data:
             await msg.edit_text(
-                f"❌ Группа <b>{GROUP_NAME}</b> не найдена в файле.\n"
+                f"<tg-emoji emoji-id="5210952531676504517">❌</tg-emoji> Группа <b>{GROUP_NAME}</b> не найдена в файле.\n"
                 "Проверь переменную GROUP_NAME.",
                 parse_mode="HTML",
             )
@@ -51,27 +51,27 @@ async def cmd_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(format_schedule(data), parse_mode="HTML")
     except Exception as e:
         logger.exception("Ошибка /today")
-        await msg.edit_text(f"⚠️ Ошибка: {e}")
+        await msg.edit_text(f"<tg-emoji emoji-id="5447644880824181073">⚠️</tg-emoji> Ошибка: {e}")
 
 
 async def cmd_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     add_subscriber(update.effective_chat.id)
     await update.message.reply_text(
-        "✅ Подписка оформлена!\n"
+        "<tg-emoji emoji-id="5206607081334906820">✔️</tg-emoji> Подписка оформлена!\n"
         "Когда появится новый файл расписания на будущий день — пришлю автоматически."
     )
 
 
 async def cmd_unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     remove_subscriber(update.effective_chat.id)
-    await update.message.reply_text("🔕 Вы отписаны.")
+    await update.message.reply_text("<tg-emoji emoji-id="5210952531676504517">❌</tg-emoji> Вы отписаны.")
 
 
 # ─── Авторассылка ─────────────────────────────────────────────────────────────
 
 async def broadcast(application: Application, sched_data: dict):
     """Рассылает новое расписание всем подписчикам."""
-    text = "🆕 <b>Новое расписание!</b>\n\n" + format_schedule(sched_data)
+    text = "<tg-emoji emoji-id="5382357040008021292">🆕</tg-emoji> <b>Новое расписание!</b>\n\n" + format_schedule(sched_data)
     for chat_id in get_all_subscribers():
         try:
             await application.bot.send_message(chat_id, text, parse_mode="HTML")
@@ -86,7 +86,7 @@ async def broadcast_changed(application: Application, sched_data: dict, diff_tex
 
     if diff_text:
         text = (
-            f"⚠️ <b>Расписание на {date}"
+            f"<tg-emoji emoji-id="5447644880824181073">⚠️</tg-emoji> <b>Расписание на {date}"
             + (f", {day}" if day else "")
             + " изменилось!</b>\n\n"
             + diff_text
@@ -95,7 +95,7 @@ async def broadcast_changed(application: Application, sched_data: dict, diff_tex
         )
     else:
         text = (
-            f"⚠️ <b>Расписание на {date}"
+            f"<tg-emoji emoji-id="5447644880824181073">⚠️</tg-emoji> <b>Расписание на {date}"
             + (f", {day}" if day else "")
             + " обновлено!</b>\n\n"
             + format_schedule(sched_data)
