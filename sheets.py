@@ -225,16 +225,23 @@ def parse_schedule(file_id: str, group_name: str) -> dict | None:
 
 # ─── Форматирование ───────────────────────────────────────────────────────────
 
+CAL   = '<tg-emoji emoji-id="5274055917766202507">🗓</tg-emoji>'
+GROUP = '<tg-emoji emoji-id="5379773896352355687">🪙</tg-emoji>'
+SUBJ  = '<tg-emoji emoji-id="5289733703742809329">🤓</tg-emoji>'
+ROOM  = '<tg-emoji emoji-id="5416041192905265756">🏠</tg-emoji>'
+SEP   = '<tg-emoji emoji-id="5332526915339173439">⚫️</tg-emoji>'
+
+
 def format_schedule(data: dict) -> str:
     date  = data.get("date", "")
     day   = data.get("day", "")
     group = data.get("group", "")
     pairs = data.get("pairs", [])
 
-    header = f"<tg-emoji emoji-id="5274055917766202507">🗓</tg-emoji> <b>{date}"
+    header = f"{CAL} <b>{date}"
     if day:
         header += f", {day}"
-    header += f"</b>\n<tg-emoji emoji-id="5379773896352355687">🪙</tg-emoji> Группа: <b>{group}</b>\n"
+    header += f"</b>\n{GROUP} Группа: <b>{group}</b>\n"
     header += "━━━━━━━━━━━━━━━━━━"
 
     if not pairs:
@@ -242,11 +249,11 @@ def format_schedule(data: dict) -> str:
 
     lines = [header]
     for p in pairs:
-        block = f"\n<tg-emoji emoji-id="5332526915339173439">⚫️</tg-emoji> <b>{p['num']} пара</b>\n   <tg-emoji emoji-id="5289733703742809329">🤓</tg-emoji> {p['subject']}"
+        block = f"\n{SEP} <b>{p['num']} пара</b>\n   {SUBJ} {p['subject']}"
         if p["teacher"]:
             block += f"\n   👩\u200d🏫 {p['teacher']}"
         if p["room"]:
-            block += f"\n   <tg-emoji emoji-id="5416041192905265756">🏠</tg-emoji> {p['room']}"
+            block += f"\n   {ROOM} {p['room']}"
         lines.append(block)
 
     return "\n".join(lines)
