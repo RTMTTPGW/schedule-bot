@@ -20,8 +20,6 @@ logger = logging.getLogger(__name__)
 
 TOKEN      = os.environ["BOT_TOKEN"]
 GROUP_NAME = os.environ.get("GROUP_NAME", "")
-# После первой отправки гифки Railway сохранит сюда file_id автоматически.
-# Можно также задать вручную если уже знаешь file_id.
 GIF_FILE_ID = os.environ.get("GIF_FILE_ID", "")
 GIF_PATH    = os.path.join(os.path.dirname(__file__), "emoji.mp4")
 
@@ -35,27 +33,36 @@ CHECK = '<tg-emoji emoji-id="5206607081334906820">✔️</tg-emoji>'
 CROSS = '<tg-emoji emoji-id="5210952531676504517">❌</tg-emoji>'
 CLOCK = '<tg-emoji emoji-id="5386367538735104399">⌛</tg-emoji>'
 
-
-# ─── Хелпер отправки гифки ────────────────────────────────────────────────────
-
-# Кэш file_id чтобы не перечитывать файл каждый раз
 _gif_file_id: str = GIF_FILE_ID
 
 
-async def _send_gif(bot, chat_id: int):
-    """Отправляет гифку. При первой отправке загружает файл и кэширует file_id."""
+# ─── Отправка гифки с текстом одним сообщением ───────────────────────────────
+
+async def _send_with_gif(bot, chat_id: int, text: str):
+    """Отправляет гифку с текстом как caption одним сообщением."""
     global _gif_file_id
     try:
         if _gif_file_id:
-            await bot.send_animation(chat_id=chat_id, animation=_gif_file_id)
+            await bot.send_animation(
+                chat_id=chat_id,
+                animation=_gif_file_id,
+                caption=text,
+                parse_mode="HTML",
+            )
         else:
             with open(GIF_PATH, "rb") as f:
-                msg = await bot.send_animation(chat_id=chat_id, animation=f)
+                msg = await bot.send_animation(
+                    chat_id=chat_id,
+                    animation=f,
+                    caption=text,
+                    parse_mode="HTML",
+                )
             _gif_file_id = msg.animation.file_id
             logger.info("Гифка загружена, file_id: %s", _gif_file_id)
-            logger.info("Добавь в Railway переменную: GIF_FILE_ID=%s", _gif_file_id)
+            logger.info("Добавь в Railway: GIF_FILE_ID=%s", _gif_file_id)
     except Exception as e:
-        logger.warning("Не удалось отправить гифку: %s", e)
+        logger.warning("Ошибка отправки гифки, шлю только текст: %s", e)
+        await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
 
 
 # ─── Команды ──────────────────────────────────────────────────────────────────
@@ -88,8 +95,8 @@ async def cmd_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="HTML",
             )
             return
-        await msg.edit_text(format_schedule(data), parse_mode="HTML")
-        await _send_gif(context.bot, update.effective_chat.id)
+        await msg.delete()
+        await _send_with_gif(context.bot, update.effective_chat.id, format_schedule(data))
     except Exception as e:
         logger.exception("Ошибка /today")
         await msg.edit_text(f"{WARN} Ошибка: {e}", parse_mode="HTML")
@@ -115,18 +122,15 @@ async def cmd_unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ─── Авторассылка ─────────────────────────────────────────────────────────────
 
 async def broadcast(application: Application, sched_data: dict):
-    """Рассылает новое расписание всем подписчикам."""
     text = f"{NEW} <b>Новое расписание!</b>\n\n" + format_schedule(sched_data)
     for chat_id in get_all_subscribers():
         try:
-            await application.bot.send_message(chat_id, text, parse_mode="HTML")
-            await _send_gif(application.bot, chat_id)
+            await _send_with_gif(application.bot, chat_id, text)
         except Exception as e:
             logger.warning("Не удалось отправить chat_id=%s: %s", chat_id, e)
 
 
 async def broadcast_changed(application: Application, sched_data: dict, diff_text: str):
-    """Рассылает уведомление об изменении расписания."""
     date = sched_data.get("date", "")
     day  = sched_data.get("day", "")
     day_str = f", {day}" if day else ""
@@ -146,8 +150,7 @@ async def broadcast_changed(application: Application, sched_data: dict, diff_tex
 
     for chat_id in get_all_subscribers():
         try:
-            await application.bot.send_message(chat_id, text, parse_mode="HTML")
-            await _send_gif(application.bot, chat_id)
+            await _send_with_gif(application.bot, chat_id, text)
         except Exception as e:
             logger.warning("Не удалось отправить chat_id=%s: %s", chat_id, e)
 
