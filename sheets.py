@@ -241,8 +241,7 @@ def format_schedule(data: dict) -> str:
     header = f"{CAL} <b>{date}"
     if day:
         header += f", {day}"
-    header += f"</b>\n{GROUP} Группа: <b>{group}</b>\n"
-    header += "━━━━━━━━━━━━━━━━━━"
+    header += f"</b>\n{GROUP} Группа: <b>{group}</b>"
 
     if not pairs:
         return header + "\n\n🎉 Занятий нет!"
