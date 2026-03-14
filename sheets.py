@@ -96,9 +96,17 @@ def _cell_val(ws, row: int, col: int) -> str:
     for rng in ws.merged_cells.ranges:
         if cell.coordinate in rng:
             val = ws.cell(rng.min_row, rng.min_col).value
-            return str(val).strip() if val is not None else ""
-    val = cell.value
-    return str(val).strip() if val is not None else ""
+            return _fmt(val)
+    return _fmt(ws.cell(row=row, column=col).value)
+
+
+def _fmt(val) -> str:
+    """Форматирует значение ячейки: float без дробной части → int."""
+    if val is None:
+        return ""
+    if isinstance(val, float) and val.is_integer():
+        return str(int(val))
+    return str(val).strip()
 
 
 def _is_group_header(ws, row: int) -> str | None:
@@ -187,6 +195,11 @@ def parse_schedule(file_id: str, group_name: str) -> dict | None:
         num     = _cell_val(ws, r, 1)   # A — номер пары
         if not num:
             continue
+        # Числа читаются как float (2.0, 3.0) — приводим к int
+        try:
+            num = str(int(float(num)))
+        except ValueError:
+            pass
         subject = _cell_val(ws, r, 2)   # B (объединение B:D)
         teacher = _cell_val(ws, r, 5)   # E (объединение E:F)
         room    = _cell_val(ws, r, 7)   # G — аудитория
@@ -235,7 +248,5 @@ def format_schedule(data: dict) -> str:
         if p["room"]:
             block += f"\n   🏫 {p['room']}"
         lines.append(block)
-
-    return "\n".join(lines)
 
     return "\n".join(lines)
