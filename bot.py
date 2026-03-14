@@ -21,15 +21,21 @@ logger = logging.getLogger(__name__)
 TOKEN      = os.environ["BOT_TOKEN"]
 GROUP_NAME = os.environ.get("GROUP_NAME", "")
 
+# ─── Премиум эмодзи ───────────────────────────────────────────────────────────
+WARN  = '<tg-emoji emoji-id="5447644880824181073">⚠️</tg-emoji>'
+NEW   = '<tg-emoji emoji-id="5382357040008021292">🆕</tg-emoji>'
+CHECK = '<tg-emoji emoji-id="5206607081334906820">✔️</tg-emoji>'
+CROSS = '<tg-emoji emoji-id="5210952531676504517">❌</tg-emoji>'
+
 
 # ─── Команды ──────────────────────────────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Привет! Я бот расписания.\n\n"
-        "📅 /today — расписание из последнего файла\n"
-        "🔔 /subscribe — подписаться на авторассылку\n"
-        "🔕 /unsubscribe — отписаться"
+        "/today — расписание из последнего файла\n"
+        "/subscribe — подписаться на авторассылку\n"
+        "/unsubscribe — отписаться"
     )
 
 
@@ -38,40 +44,44 @@ async def cmd_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         file_id = get_latest_file_id()
         if not file_id:
-            await msg.edit_text("<tg-emoji emoji-id="5210952531676504517">❌</tg-emoji> Файлов в папке Drive не найдено.")
+            await msg.edit_text(f"{CROSS} Файлов в папке Drive не найдено.")
             return
         data = parse_schedule(file_id, GROUP_NAME)
         if not data:
             await msg.edit_text(
-                f"<tg-emoji emoji-id="5210952531676504517">❌</tg-emoji> Группа <b>{GROUP_NAME}</b> не найдена в файле.\n"
-                "Проверь переменную GROUP_NAME.",
+                f'{CROSS} Группа <b>{GROUP_NAME}</b> не найдена в файле.\n'
+                'Проверь переменную GROUP_NAME.',
                 parse_mode="HTML",
             )
             return
         await msg.edit_text(format_schedule(data), parse_mode="HTML")
     except Exception as e:
         logger.exception("Ошибка /today")
-        await msg.edit_text(f"<tg-emoji emoji-id="5447644880824181073">⚠️</tg-emoji> Ошибка: {e}")
+        await msg.edit_text(f"{WARN} Ошибка: {e}", parse_mode="HTML")
 
 
 async def cmd_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     add_subscriber(update.effective_chat.id)
     await update.message.reply_text(
-        "<tg-emoji emoji-id="5206607081334906820">✔️</tg-emoji> Подписка оформлена!\n"
-        "Когда появится новый файл расписания на будущий день — пришлю автоматически."
+        f"{CHECK} Подписка оформлена!\n"
+        "Когда появится новый файл расписания на будущий день — пришлю автоматически.",
+        parse_mode="HTML",
     )
 
 
 async def cmd_unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     remove_subscriber(update.effective_chat.id)
-    await update.message.reply_text("<tg-emoji emoji-id="5210952531676504517">❌</tg-emoji> Вы отписаны.")
+    await update.message.reply_text(
+        f"{CROSS} Вы отписаны.",
+        parse_mode="HTML",
+    )
 
 
 # ─── Авторассылка ─────────────────────────────────────────────────────────────
 
 async def broadcast(application: Application, sched_data: dict):
     """Рассылает новое расписание всем подписчикам."""
-    text = "<tg-emoji emoji-id="5382357040008021292">🆕</tg-emoji> <b>Новое расписание!</b>\n\n" + format_schedule(sched_data)
+    text = f"{NEW} <b>Новое расписание!</b>\n\n" + format_schedule(sched_data)
     for chat_id in get_all_subscribers():
         try:
             await application.bot.send_message(chat_id, text, parse_mode="HTML")
@@ -83,21 +93,18 @@ async def broadcast_changed(application: Application, sched_data: dict, diff_tex
     """Рассылает уведомление об изменении расписания."""
     date = sched_data.get("date", "")
     day  = sched_data.get("day", "")
+    day_str = f", {day}" if day else ""
 
     if diff_text:
         text = (
-            f"<tg-emoji emoji-id="5447644880824181073">⚠️</tg-emoji> <b>Расписание на {date}"
-            + (f", {day}" if day else "")
-            + " изменилось!</b>\n\n"
+            f"{WARN} <b>Расписание на {date}{day_str} изменилось!</b>\n\n"
             + diff_text
             + "\n\n📋 Актуальное расписание:\n\n"
             + format_schedule(sched_data)
         )
     else:
         text = (
-            f"<tg-emoji emoji-id="5447644880824181073">⚠️</tg-emoji> <b>Расписание на {date}"
-            + (f", {day}" if day else "")
-            + " обновлено!</b>\n\n"
+            f"{WARN} <b>Расписание на {date}{day_str} обновлено!</b>\n\n"
             + format_schedule(sched_data)
         )
 
