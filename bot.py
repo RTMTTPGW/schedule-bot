@@ -41,23 +41,23 @@ CROSS = '<tg-emoji emoji-id="5210952531676504517">❌</tg-emoji>'
 CLOCK = '<tg-emoji emoji-id="5386367538735104399">⌛</tg-emoji>'
 
 # ─── Cooldown ─────────────────────────────────────────────────────────────────
-COOLDOWN_SECONDS = int(os.environ.get("COOLDOWN_SECONDS", "30"))
-# chat_id -> timestamp последнего успешного запроса
-_last_request: dict[int, float] = {}
+COOLDOWN_SECONDS = int(os.environ.get("COOLDOWN_SECONDS", "10"))
+# (chat_id, command) -> timestamp последнего вызова этой команды
+_last_request: dict[tuple, float] = {}
 
 
-def _check_cooldown(chat_id: int) -> int | None:
-    """Возвращает сколько секунд осталось ждать, или None если можно отвечать."""
-    last = _last_request.get(chat_id)
+def _check_cooldown(chat_id: int, command: str) -> int | None:
+    """Возвращает сколько секунд ждать до повтора той же команды, или None если можно."""
+    key = (chat_id, command)
+    last = _last_request.get(key)
     if last is None:
         return None
-    elapsed = time.time() - last
-    remaining = int(COOLDOWN_SECONDS - elapsed)
+    remaining = int(COOLDOWN_SECONDS - (time.time() - last))
     return remaining if remaining > 0 else None
 
 
-def _set_cooldown(chat_id: int):
-    _last_request[chat_id] = time.time()
+def _set_cooldown(chat_id: int, command: str):
+    _last_request[(chat_id, command)] = time.time()
 
 
 # ─── GIF file_id (хранится в SQLite) ─────────────────────────────────────────
@@ -133,10 +133,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Расписание из последнего файла с датой <= сегодня."""
     chat_id = update.effective_chat.id
-    wait = _check_cooldown(chat_id)
+    wait = _check_cooldown(chat_id, "today")
     if wait:
         await update.message.reply_text(
-            f"{CLOCK} Подожди ещё <b>{wait} сек.</b> перед следующим запросом.",
+            f"{CLOCK} Подожди ещё <b>{wait} сек.</b>",
             parse_mode="HTML",
         )
         return
@@ -147,7 +147,7 @@ async def cmd_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not file_id:
             await msg.edit_text(f"{CROSS} Файлов в папке Drive не найдено.", parse_mode="HTML")
             return
-        _set_cooldown(chat_id)
+        _set_cooldown(chat_id, "today")
         await _fetch_and_reply(msg, context.bot, chat_id, file_id)
     except Exception as e:
         logger.exception("Ошибка /today")
@@ -157,10 +157,10 @@ async def cmd_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_new(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Расписание из последнего загруженного файла (может быть на будущий день)."""
     chat_id = update.effective_chat.id
-    wait = _check_cooldown(chat_id)
+    wait = _check_cooldown(chat_id, "new")
     if wait:
         await update.message.reply_text(
-            f"{CLOCK} Подожди ещё <b>{wait} сек.</b> перед следующим запросом.",
+            f"{CLOCK} Подожди ещё <b>{wait} сек.</b>",
             parse_mode="HTML",
         )
         return
@@ -171,7 +171,7 @@ async def cmd_new(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not file_id:
             await msg.edit_text(f"{CROSS} Файлов в папке Drive не найдено.", parse_mode="HTML")
             return
-        _set_cooldown(chat_id)
+        _set_cooldown(chat_id, "new")
         await _fetch_and_reply(msg, context.bot, chat_id, file_id)
     except Exception as e:
         logger.exception("Ошибка /new")
