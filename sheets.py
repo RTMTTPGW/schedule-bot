@@ -231,10 +231,10 @@ def format_schedule(data: dict) -> str:
     group = data.get("group", "")
     pairs = data.get("pairs", [])
 
-    header = f"📅 <b>{date}"
+    header = f"<tg-emoji emoji-id="5274055917766202507">🗓</tg-emoji> <b>{date}"
     if day:
         header += f", {day}"
-    header += f"</b>\n👥 Группа: <b>{group}</b>\n"
+    header += f"</b>\n<tg-emoji emoji-id="5379773896352355687">🪙</tg-emoji> Группа: <b>{group}</b>\n"
     header += "━━━━━━━━━━━━━━━━━━"
 
     if not pairs:
@@ -242,11 +242,11 @@ def format_schedule(data: dict) -> str:
 
     lines = [header]
     for p in pairs:
-        block = f"\n🔹 <b>{p['num']} пара</b>\n   📖 {p['subject']}"
+        block = f"\n<tg-emoji emoji-id="5332526915339173439">⚫️</tg-emoji> <b>{p['num']} пара</b>\n   <tg-emoji emoji-id="5289733703742809329">🤓</tg-emoji> {p['subject']}"
         if p["teacher"]:
             block += f"\n   👩\u200d🏫 {p['teacher']}"
         if p["room"]:
-            block += f"\n   🏫 {p['room']}"
+            block += f"\n   <tg-emoji emoji-id="5416041192905265756">🏠</tg-emoji> {p['room']}"
         lines.append(block)
 
     return "\n".join(lines)
