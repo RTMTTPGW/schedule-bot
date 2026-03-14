@@ -1,7 +1,6 @@
 """
 scheduler.py — фоновая проверка Drive на новые/изменённые файлы.
-
-Если несколько проверок подряд падают с ошибкой — шлёт алерт в группу.
+При новом файле рассылает каждому подписчику расписание его группы.
 """
 
 import hashlib
@@ -14,23 +13,22 @@ from datetime import date, timedelta
 import openpyxl
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from db import is_file_seen, mark_file_seen, get_file_hash
-from sheets import get_drive_files, download_xlsx, parse_schedule, format_schedule
+from db import is_file_seen, mark_file_seen, get_file_hash, get_all_subscribers
+from sheets import get_drive_files, download_xlsx, parse_schedule
 
 logger = logging.getLogger(__name__)
 
 CHECK_INTERVAL_MINUTES = int(os.environ.get("CHECK_INTERVAL_MINUTES", "10"))
-GROUP_NAME = os.environ.get("GROUP_NAME", "")
-
-# Сколько ошибок подряд перед алертом
+DEFAULT_GROUP = os.environ.get("GROUP_NAME", "")
 ERROR_THRESHOLD = int(os.environ.get("DRIVE_ERROR_THRESHOLD", "3"))
+
 _consecutive_errors = 0
-_alert_sent = False  # чтобы не спамить алертами
+_alert_sent = False
+# file_id -> {group_name -> parsed_data}
+_last_schedules: dict[str, dict[str, dict]] = {}
 
-_last_schedule: dict[str, dict] = {}
 
-
-# ─── Хэш расписания ───────────────────────────────────────────────────────────
+# ─── Хэш ──────────────────────────────────────────────────────────────────────
 
 def _schedule_hash(data: dict) -> str:
     pairs = data.get("pairs", [])
@@ -41,7 +39,7 @@ def _schedule_hash(data: dict) -> str:
     return hashlib.md5(content.encode()).hexdigest()
 
 
-# ─── Дата из файла ────────────────────────────────────────────────────────────
+# ─── Дата ─────────────────────────────────────────────────────────────────────
 
 def _extract_date(file_id: str) -> date | None:
     try:
@@ -60,11 +58,11 @@ def _extract_date(file_id: str) -> date | None:
         if m:
             return date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
     except Exception as e:
-        logger.warning("Не удалось прочитать дату из файла %s: %s", file_id, e)
+        logger.warning("Не удалось прочитать дату из %s: %s", file_id, e)
     return None
 
 
-# ─── Diff расписаний ──────────────────────────────────────────────────────────
+# ─── Diff ─────────────────────────────────────────────────────────────────────
 
 def _diff_schedule(old_data: dict, new_data: dict) -> str:
     old_pairs = {str(p["num"]): p for p in old_data.get("pairs", [])}
@@ -84,10 +82,22 @@ def _diff_schedule(old_data: dict, new_data: dict) -> str:
         if o["teacher"] != n["teacher"]:
             changes.append(f"   👩‍🏫 {o['teacher']} → {n['teacher']}")
         if o["room"] != n["room"]:
-            changes.append(f"   🏫 {o['room']} → {n['room']}")
+            changes.append(f"   🏠 {o['room']} → {n['room']}")
         if changes:
             lines.append(f"✏️ <b>{num} пара изменена</b>\n" + "\n".join(changes))
     return "\n\n".join(lines)
+
+
+# ─── Уникальные группы подписчиков ────────────────────────────────────────────
+
+def _get_subscribed_groups() -> set[str]:
+    """Собирает все уникальные группы среди подписчиков."""
+    groups = set()
+    for sub in get_all_subscribers():
+        g = sub["group_name"] or DEFAULT_GROUP
+        if g:
+            groups.add(g)
+    return groups
 
 
 # ─── Основная проверка ────────────────────────────────────────────────────────
@@ -97,33 +107,23 @@ async def _check_for_new_files(application, broadcast_new, broadcast_changed, al
 
     try:
         files = get_drive_files()
-        # Успех — сбрасываем счётчик ошибок и флаг алерта
         _consecutive_errors = 0
         _alert_sent = False
     except Exception as e:
         _consecutive_errors += 1
-        logger.exception("Ошибка получения файлов Drive (попытка %d)", _consecutive_errors)
+        logger.exception("Ошибка Drive (попытка %d)", _consecutive_errors)
         if _consecutive_errors >= ERROR_THRESHOLD and not _alert_sent:
             _alert_sent = True
             await alert_error(application, str(e))
         return
 
     tomorrow = date.today() + timedelta(days=1)
+    groups = _get_subscribed_groups()
+    if not groups:
+        return
 
     for file in files:
         file_id = file["id"]
-        try:
-            sched_data = parse_schedule(file_id, GROUP_NAME)
-        except Exception as e:
-            logger.warning("Ошибка парсинга файла %s: %s", file_id, e)
-            if not is_file_seen(file_id):
-                mark_file_seen(file_id)
-            continue
-
-        if not sched_data:
-            if not is_file_seen(file_id):
-                mark_file_seen(file_id)
-            continue
 
         file_date = _extract_date(file_id)
         if file_date is None or file_date < tomorrow:
@@ -131,24 +131,52 @@ async def _check_for_new_files(application, broadcast_new, broadcast_changed, al
                 mark_file_seen(file_id)
             continue
 
-        new_hash = _schedule_hash(sched_data)
+        # Парсим расписание для всех групп подписчиков
+        new_scheds: dict[str, dict] = {}
+        for group in groups:
+            try:
+                data = parse_schedule(file_id, group)
+                if data:
+                    new_scheds[group] = data
+            except Exception as e:
+                logger.warning("Ошибка парсинга группы %s: %s", group, e)
+
+        if not new_scheds:
+            if not is_file_seen(file_id):
+                mark_file_seen(file_id)
+            continue
+
+        # Считаем общий хэш всех групп
+        combined_hash = hashlib.md5(
+            "|".join(
+                f"{g}:{_schedule_hash(d)}"
+                for g, d in sorted(new_scheds.items())
+            ).encode()
+        ).hexdigest()
 
         if not is_file_seen(file_id):
             logger.info("Новый файл %s (дата %s) — рассылка", file_id, file_date)
-            mark_file_seen(file_id, new_hash)
-            _last_schedule[file_id] = sched_data
-            await broadcast_new(application, sched_data)
+            mark_file_seen(file_id, combined_hash)
+            _last_schedules[file_id] = new_scheds
+            await broadcast_new(application, file_id)
             break
+
         else:
             old_hash = get_file_hash(file_id)
-            if old_hash and old_hash == new_hash:
+            if old_hash == combined_hash:
                 continue
-            old_sched = _last_schedule.get(file_id)
-            diff_text = _diff_schedule(old_sched, sched_data) if old_sched else ""
+
+            # Считаем diff для каждой группы
+            old_scheds = _last_schedules.get(file_id, {})
+            diffs: dict[str, str] = {}
+            for group, new_data in new_scheds.items():
+                old_data = old_scheds.get(group)
+                diffs[group] = _diff_schedule(old_data, new_data) if old_data else ""
+
             logger.info("Файл %s изменился — уведомление", file_id)
-            mark_file_seen(file_id, new_hash)
-            _last_schedule[file_id] = sched_data
-            await broadcast_changed(application, sched_data, diff_text)
+            mark_file_seen(file_id, combined_hash)
+            _last_schedules[file_id] = new_scheds
+            await broadcast_changed(application, file_id, diffs)
 
 
 def start_scheduler(application, broadcast_new, broadcast_changed, alert_error):
@@ -162,4 +190,4 @@ def start_scheduler(application, broadcast_new, broadcast_changed, alert_error):
         replace_existing=True,
     )
     scheduler.start()
-    logger.info("Планировщик запущен: проверка каждые %d мин.", CHECK_INTERVAL_MINUTES)
+    logger.info("Планировщик запущен: каждые %d мин.", CHECK_INTERVAL_MINUTES)
