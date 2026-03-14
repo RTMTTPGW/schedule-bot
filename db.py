@@ -21,8 +21,9 @@ def init_db():
         """)
         con.execute("""
             CREATE TABLE IF NOT EXISTS seen_files (
-                file_id TEXT PRIMARY KEY,
-                seen_at  TEXT DEFAULT (datetime('now'))
+                file_id    TEXT PRIMARY KEY,
+                seen_at    TEXT DEFAULT (datetime('now')),
+                sched_hash TEXT DEFAULT NULL
             )
         """)
     logger.info("БД инициализирована: %s", DB_PATH)
@@ -49,7 +50,7 @@ def get_all_subscribers() -> list[int]:
     return [r[0] for r in rows]
 
 
-# ─── Отслеживание новых файлов ────────────────────────────────────────────────
+# ─── Отслеживание файлов и хэшей расписания ──────────────────────────────────
 
 def is_file_seen(file_id: str) -> bool:
     with _conn() as con:
@@ -59,9 +60,23 @@ def is_file_seen(file_id: str) -> bool:
     return row is not None
 
 
-def mark_file_seen(file_id: str):
+def get_file_hash(file_id: str) -> str | None:
+    """Возвращает сохранённый хэш расписания для файла, или None если не сохранён."""
+    with _conn() as con:
+        row = con.execute(
+            "SELECT sched_hash FROM seen_files WHERE file_id = ?", (file_id,)
+        ).fetchone()
+    return row[0] if row else None
+
+
+def mark_file_seen(file_id: str, sched_hash: str | None = None):
+    """Помечает файл как просмотренный, сохраняет хэш расписания."""
     with _conn() as con:
         con.execute(
-            "INSERT OR IGNORE INTO seen_files (file_id) VALUES (?)",
-            (file_id,),
+            """
+            INSERT INTO seen_files (file_id, sched_hash)
+            VALUES (?, ?)
+            ON CONFLICT(file_id) DO UPDATE SET sched_hash = excluded.sched_hash
+            """,
+            (file_id, sched_hash),
         )
