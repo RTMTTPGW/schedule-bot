@@ -126,17 +126,37 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ─── Авторассылка (вызывается из scheduler) ───────────────────────────────────
 
-async def broadcast(application: Application, file_id: str):
-    logger.info("Рассылка нового файла: %s", file_id)
-    try:
-        data = parse_schedule(file_id, GROUP_NAME)
-        if not data:
-            logger.warning("Группа не найдена в новом файле")
-            return
-        text = "🆕 <b>Новое расписание!</b>\n\n" + format_schedule(data)
-    except Exception:
-        logger.exception("Ошибка парсинга при рассылке")
-        return
+async def broadcast(application: Application, sched_data: dict):
+    """Рассылает новое расписание всем подписчикам."""
+    text = "🆕 <b>Новое расписание!</b>\n\n" + format_schedule(sched_data)
+    for chat_id in get_all_subscribers():
+        try:
+            await application.bot.send_message(chat_id, text, parse_mode="HTML")
+        except Exception as e:
+            logger.warning("Не удалось отправить chat_id=%s: %s", chat_id, e)
+
+
+async def broadcast_changed(application: Application, sched_data: dict, diff_text: str):
+    """Рассылает уведомление об изменении расписания."""
+    date  = sched_data.get("date", "")
+    day   = sched_data.get("day", "")
+
+    if diff_text:
+        text = (
+            f"⚠️ <b>Расписание на {date}"
+            + (f", {day}" if day else "")
+            + " изменилось!</b>\n\n"
+            + diff_text
+            + "\n\n📋 Актуальное расписание:\n\n"
+            + format_schedule(sched_data)
+        )
+    else:
+        text = (
+            f"⚠️ <b>Расписание на {date}"
+            + (f", {day}" if day else "")
+            + " обновлено!</b>\n\n"
+            + format_schedule(sched_data)
+        )
 
     for chat_id in get_all_subscribers():
         try:
@@ -164,7 +184,7 @@ def main():
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_buttons)
     )
 
-    start_scheduler(app, broadcast)
+    start_scheduler(app, broadcast, broadcast_changed)
 
     logger.info("Бот запущен, группа: %s", GROUP_NAME)
     app.run_polling(allowed_updates=Update.ALL_TYPES)
