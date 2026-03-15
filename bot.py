@@ -104,22 +104,24 @@ async def _send_with_gif(bot, chat_id: int, text: str, reply_markup=None):
     gif_id = _get_gif_id()
     try:
         if gif_id:
-            await bot.send_animation(
-                chat_id=chat_id, animation=gif_id,
+            await bot.send_document(
+                chat_id=chat_id, document=gif_id,
                 caption=text, parse_mode="HTML",
                 reply_markup=reply_markup,
             )
         else:
             with open(GIF_PATH, "rb") as f:
-                msg = await bot.send_animation(
-                    chat_id=chat_id, animation=f,
+                from telegram import InputFile
+                msg = await bot.send_document(
+                    chat_id=chat_id,
+                    document=InputFile(f, filename="schedule.gif"),
                     caption=text, parse_mode="HTML",
                     reply_markup=reply_markup,
                 )
-            _gif_file_id = msg.animation.file_id
+            _gif_file_id = msg.document.file_id
             save_gif_file_id(_gif_file_id)
     except Exception as e:
-        logger.warning("Ошибка гифки: %s", e)
+        logger.warning("Ошибка гифки: %s", e.args[0] if e.args else type(e).__name__)
         await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML",
                                reply_markup=reply_markup)
 
@@ -177,8 +179,8 @@ def _menu_keyboard_raw(chat_id: int) -> dict:
         [{"text": "🌐 Открыть сайт расписания", "web_app": {"url": "https://rtmttpgw.github.io/vpt-schedule/"}}],
         [{"text": "📅 Расписание на сегодня", "callback_data": "m:today"}],
         [{"text": "🆕 Последнее новое", "callback_data": "m:new"}],
-        [{"text": "👥 Сменить группу", "callback_data": "m:setgroup"}],
         [{"text": "🏢 Сменить корпус", "callback_data": "m:setcorp"}],
+        [{"text": "👥 Сменить группу", "callback_data": "m:setgroup"}],
     ]
     if subscribed:
         kb.append([{"text": "🔕 Отписаться", "callback_data": "m:unsubscribe", "style": "danger"}])
@@ -192,8 +194,8 @@ def _menu_keyboard_ptb(chat_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🌐 Открыть сайт расписания", web_app=WebAppInfo(url="https://rtmttpgw.github.io/vpt-schedule/"))],
         [InlineKeyboardButton("📅 Расписание на сегодня", callback_data="m:today")],
         [InlineKeyboardButton("🆕 Последнее новое", callback_data="m:new")],
-        [InlineKeyboardButton("👥 Сменить группу", callback_data="m:setgroup")],
         [InlineKeyboardButton("🏢 Сменить корпус", callback_data="m:setcorp")],
+        [InlineKeyboardButton("👥 Сменить группу", callback_data="m:setgroup")],
     ]
     if subscribed:
         kb.append([InlineKeyboardButton("🔕 Отписаться", callback_data="m:unsubscribe")])
@@ -355,8 +357,11 @@ async def cb_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action == "today":
         group   = _resolve_group(chat_id)
         corp_id = _resolve_corp(chat_id)
-        if not group:
-            await query.answer("Сначала выбери группу!", show_alert=True)
+        if not corp_id or not group:
+            await query.answer(
+                "Сначала выбери корпус и группу! Нажми Сменить корпус, затем Сменить группу.",
+                show_alert=True
+            )
             return
         wait = _check_cooldown(chat_id, "today")
         if wait:
@@ -377,8 +382,11 @@ async def cb_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == "new":
         group   = _resolve_group(chat_id)
         corp_id = _resolve_corp(chat_id)
-        if not group:
-            await query.answer("Сначала выбери группу!", show_alert=True)
+        if not corp_id or not group:
+            await query.answer(
+                "Сначала выбери корпус и группу! Нажми Сменить корпус, затем Сменить группу.",
+                show_alert=True
+            )
             return
         wait = _check_cooldown(chat_id, "new")
         if wait:
