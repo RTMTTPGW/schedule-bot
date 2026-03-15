@@ -41,6 +41,10 @@ logger = logging.getLogger(__name__)
 from html import escape as _esc
 TOKEN         = os.environ["BOT_TOKEN"]
 BASE_URL      = f"https://api.telegram.org/bot{TOKEN}"
+
+def _mask_token(text: str) -> str:
+    """Маскирует токен бота в строках для безопасного логирования."""
+    return text.replace(TOKEN, "***") if TOKEN in text else text
 ADMIN_ID      = int(os.environ.get("ADMIN_ID", "0"))
 DEFAULT_GROUP = os.environ.get("GROUP_NAME", "")
 DEFAULT_CORP  = os.environ.get("CORP_ID", "corp3")
@@ -209,7 +213,7 @@ async def _send_msg_with_color_keyboard(bot, chat_id: int, text: str, subscribed
         if resp.json().get("ok"):
             return
     except Exception as e:
-        logger.warning("Raw keyboard failed: %s", e)
+        logger.warning("Raw keyboard failed: %s", e.args[0] if e.args else type(e).__name__)
     await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML",
                            reply_markup=_menu_keyboard_ptb(chat_id))
 
@@ -230,7 +234,7 @@ async def _send_menu(bot, chat_id: int):
         if resp.json().get("ok"):
             return
     except Exception as e:
-        logger.warning("Raw menu failed: %s", e)
+        logger.warning("Raw menu failed: %s", e.args[0] if e.args else type(e).__name__)
     await bot.send_message(chat_id=chat_id, text=text,
                            parse_mode="HTML", reply_markup=_menu_keyboard_ptb(chat_id))
 
@@ -447,7 +451,7 @@ async def cb_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not resp.json().get("ok"):
                 raise Exception(resp.json().get("description"))
         except Exception as e:
-            logger.warning("Edit subscribe failed: %s", e)
+            logger.warning("Edit subscribe failed: %s", e.args[0] if e.args else type(e).__name__)
             await query.edit_message_text(text=text, parse_mode="HTML",
                                           reply_markup=_menu_keyboard_ptb(chat_id))
 
@@ -465,7 +469,7 @@ async def cb_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not resp.json().get("ok"):
                 raise Exception(resp.json().get("description"))
         except Exception as e:
-            logger.warning("Edit unsubscribe failed: %s", e)
+            logger.warning("Edit unsubscribe failed: %s", e.args[0] if e.args else type(e).__name__)
             await query.edit_message_text(text=text, parse_mode="HTML",
                                           reply_markup=_menu_keyboard_ptb(chat_id))
 
