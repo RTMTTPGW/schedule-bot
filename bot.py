@@ -365,10 +365,9 @@ async def cb_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _set_cooldown(chat_id, "today")
             await query.message.delete()
             await _fetch_and_send(context.bot, chat_id, file_id, group, corp_id)
-        except Exception as e:
+        except Exception:
             logger.exception("Ошибка today")
-            logger.exception("Ошибка кнопки")
-        await query.answer("Произошла ошибка. Попробуй позже.", show_alert=True)
+            await query.answer("Произошла ошибка. Попробуй позже.", show_alert=True)
 
     elif action == "new":
         group   = _resolve_group(chat_id)
@@ -388,10 +387,9 @@ async def cb_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _set_cooldown(chat_id, "new")
             await query.message.delete()
             await _fetch_and_send(context.bot, chat_id, file_id, group, corp_id)
-        except Exception as e:
+        except Exception:
             logger.exception("Ошибка new")
-            logger.exception("Ошибка кнопки")
-        await query.answer("Произошла ошибка. Попробуй позже.", show_alert=True)
+            await query.answer("Произошла ошибка. Попробуй позже.", show_alert=True)
 
     elif action == "setcorp":
         # Удаляем меню, показываем экран выбора корпуса
@@ -1051,9 +1049,12 @@ async def _cmd_direct(update: Update, context: ContextTypes.DEFAULT_TYPE, cmd: s
         _set_cooldown(chat_id, cmd)
         await msg.delete()
         await _fetch_and_send(context.bot, chat_id, file_id, group, corp_id)
-    except Exception as e:
+    except Exception:
         logger.exception("Ошибка /%s", cmd)
-        await msg.edit_text(f"{WARN} Ошибка: {e}", parse_mode="HTML")
+        try:
+            await msg.edit_text(f"{WARN} Произошла ошибка. Попробуй позже.", parse_mode="HTML")
+        except Exception:
+            pass
 
 
 def _build_ptb_app():
