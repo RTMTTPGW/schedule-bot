@@ -245,6 +245,8 @@ async def _replace_with_menu(query, chat_id: int):
 # ─── /start ───────────────────────────────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
     chat_id = update.effective_chat.id
 
     if is_group_mode(chat_id):
@@ -289,11 +291,42 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML",
     )
 
-    # Меню — статус + кнопки
+    # В групповых чатах — только текстовое сообщение без кнопок
+    from telegram import Chat
+    is_private = update.effective_chat.type == Chat.PRIVATE
+
+    if not is_private:
+        if corp_id and group:
+            sub_status = f"{CHECK} Авторассылка включена" if subscribed else f"{CROSS} Авторассылка отключена"
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    f"🏢 Корпус: <b>{_esc(corp.get('name', corp_id))}</b>\n"
+                    f"👥 Группа: <b>{_esc(group)}</b>\n"
+                    f"{sub_status}\n\n"
+                    f"Используй /groupmode чтобы включить авторассылку без кнопок."
+                ),
+                parse_mode="HTML",
+            )
+        else:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    f"{PIN} Для настройки бота в группе:\n"
+                    f"1. /setcorp — выбери корпус\n"
+                    f"2. /setgroup — укажи группу\n"
+                    f"3. /subscribe — подпишись на авторассылку\n"
+                    f"4. /groupmode — включи тихий режим (только для админов)"
+                ),
+                parse_mode="HTML",
+            )
+        return
+
+    # В личке — меню с кнопками
     if corp_id and group:
         sub_status = f"{CHECK} Авторассылка включена" if subscribed else f"{CROSS} Авторассылка отключена"
         menu_text = (
-            f"🏢 Корпус: <b>{corp.get('name', corp_id)}</b>\n"
+            f"🏢 Корпус: <b>{_esc(corp.get('name', corp_id))}</b>\n"
             f"👥 Группа: <b>{_esc(group)}</b>\n"
             f"{sub_status}"
         )
