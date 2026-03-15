@@ -27,6 +27,7 @@ from db import (
     set_chat_corp, get_chat_corp,
     set_group_mode, is_group_mode,
     get_scheduler_stats,
+    kv_get, kv_set,
 )
 from sheets import get_latest_file_id, get_today_file_id, parse_schedule, format_schedule
 from config import CORPS, CORPS_BY_ID
@@ -49,7 +50,7 @@ ADMIN_ID      = int(os.environ.get("ADMIN_ID", "0"))
 DEFAULT_GROUP = os.environ.get("GROUP_NAME", "")
 DEFAULT_CORP  = os.environ.get("CORP_ID", "corp3")
 ALERT_CHAT_ID = os.environ.get("ALERT_CHAT_ID", "")
-GIF_PATH      = os.path.join(os.path.dirname(__file__), "emoji.mp4")
+GIF_PATH      = os.path.join(os.path.dirname(__file__), "emoji.gif")
 
 # ConversationHandler states
 WAITING_GROUP  = 1
@@ -1112,6 +1113,15 @@ def main():
     from api import app as fastapi_app
 
     init_db()
+
+    # Сбрасываем кэш gif_file_id если файл изменился
+    if os.path.exists(GIF_PATH):
+        mtime = str(int(os.path.getmtime(GIF_PATH)))
+        from db import kv_get, kv_set
+        if kv_get('gif_mtime') != mtime:
+            kv_set('gif_mtime', mtime)
+            save_gif_file_id('')
+            logger.info("GIF обновлён — сброс кэша")
 
     ptb = _build_ptb_app()
     start_scheduler(ptb, broadcast, broadcast_changed, alert_drive_error, on_broadcast_done)
