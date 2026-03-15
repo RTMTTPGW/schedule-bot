@@ -4,6 +4,15 @@ import logging
 import asyncio
 import httpx
 
+_http_client: httpx.AsyncClient | None = None
+
+def _get_http() -> httpx.AsyncClient:
+    global _http_client
+    if _http_client is None or _http_client.is_closed:
+        _http_client = httpx.AsyncClient(timeout=10)
+    return _http_client
+
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
@@ -29,7 +38,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+from html import escape as _esc
 TOKEN         = os.environ["BOT_TOKEN"]
+BASE_URL      = f"https://api.telegram.org/bot{TOKEN}"
 ADMIN_ID      = int(os.environ.get("ADMIN_ID", "0"))
 DEFAULT_GROUP = os.environ.get("GROUP_NAME", "")
 DEFAULT_CORP  = os.environ.get("CORP_ID", "corp3")
@@ -59,11 +70,16 @@ COOLDOWN_SECONDS = int(os.environ.get("COOLDOWN_SECONDS", "30"))
 _last_request: dict[tuple, float] = {}
 
 def _check_cooldown(chat_id: int, command: str) -> int | None:
+    now = time.time()
+    # Чистим записи старше 2х кулдаунов
+    expired = [k for k, v in list(_last_request.items()) if now - v > COOLDOWN_SECONDS * 2]
+    for k in expired:
+        del _last_request[k]
     key = (chat_id, command)
     last = _last_request.get(key)
     if last is None:
         return None
-    remaining = int(COOLDOWN_SECONDS - (time.time() - last))
+    remaining = int(COOLDOWN_SECONDS - (now - last))
     return remaining if remaining > 0 else None
 
 def _set_cooldown(chat_id: int, command: str):
@@ -121,7 +137,7 @@ async def _fetch_and_send(bot, chat_id: int, file_id: str, group: str, corp_id: 
     if not data:
         await bot.send_message(
             chat_id=chat_id,
-            text=f'{CROSS} Группа <b>{group}</b> не найдена в файле.',
+            text=f'{CROSS} Группа <b>{_esc(group)}</b> не найдена в файле.',
             parse_mode="HTML",
             reply_markup=kb,
         )
@@ -146,7 +162,7 @@ def _menu_text(chat_id: int) -> str:
     return (
         f"{WAVE} <b>Бот расписания ВПТ</b>\n\n"
         f"🏢 Корпус: <b>{corp.get('name', corp_id)}</b>\n"
-        f"👥 Группа: <b>{group}</b>\n"
+        f"👥 Группа: <b>{_esc(group)}</b>\n"
         f"{sub_status}"
     )
 
@@ -184,9 +200,8 @@ async def _send_msg_with_color_keyboard(bot, chat_id: int, text: str, subscribed
     """Отправляет сообщение с цветными кнопками через raw Bot API."""
     raw_kb = _menu_keyboard_raw(chat_id)
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+        resp = await _get_http().post(
+                f"{BASE_URL}/sendMessage",
                 json={"chat_id": chat_id, "text": text,
                       "parse_mode": "HTML", "reply_markup": raw_kb},
                 timeout=10,
@@ -206,9 +221,8 @@ async def _send_menu(bot, chat_id: int):
     text   = _menu_text(chat_id)
     raw_kb = _menu_keyboard_raw(chat_id)
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+        resp = await _get_http().post(
+                f"{BASE_URL}/sendMessage",
                 json={"chat_id": chat_id, "text": text,
                       "parse_mode": "HTML", "reply_markup": raw_kb},
                 timeout=10,
@@ -280,7 +294,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sub_status = f"{CHECK} Авторассылка включена" if subscribed else f"{CROSS} Авторассылка отключена"
         menu_text = (
             f"🏢 Корпус: <b>{corp.get('name', corp_id)}</b>\n"
-            f"👥 Группа: <b>{group}</b>\n"
+            f"👥 Группа: <b>{_esc(group)}</b>\n"
             f"{sub_status}"
         )
     else:
@@ -320,7 +334,8 @@ async def cb_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _fetch_and_send(context.bot, chat_id, file_id, group, corp_id)
         except Exception as e:
             logger.exception("Ошибка today")
-            await query.answer(f"Ошибка: {e}", show_alert=True)
+            logger.exception("Ошибка кнопки")
+        await query.answer("Произошла ошибка. Попробуй позже.", show_alert=True)
 
     elif action == "new":
         group   = _resolve_group(chat_id)
@@ -342,7 +357,8 @@ async def cb_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _fetch_and_send(context.bot, chat_id, file_id, group, corp_id)
         except Exception as e:
             logger.exception("Ошибка new")
-            await query.answer(f"Ошибка: {e}", show_alert=True)
+            logger.exception("Ошибка кнопки")
+        await query.answer("Произошла ошибка. Попробуй позже.", show_alert=True)
 
     elif action == "setcorp":
         # Удаляем меню, показываем экран выбора корпуса
@@ -391,9 +407,8 @@ async def cb_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text   = _menu_text(chat_id)
         raw_kb = _menu_keyboard_raw(chat_id)
         try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.post(
-                    f"https://api.telegram.org/bot{TOKEN}/editMessageText",
+            resp = await _get_http().post(
+                    f"{BASE_URL}/editMessageText",
                     json={"chat_id": chat_id, "message_id": query.message.message_id,
                           "text": text, "parse_mode": "HTML", "reply_markup": raw_kb},
                     timeout=10,
@@ -410,9 +425,8 @@ async def cb_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text   = _menu_text(chat_id)
         raw_kb = _menu_keyboard_raw(chat_id)
         try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.post(
-                    f"https://api.telegram.org/bot{TOKEN}/editMessageText",
+            resp = await _get_http().post(
+                    f"{BASE_URL}/editMessageText",
                     json={"chat_id": chat_id, "message_id": query.message.message_id,
                           "text": text, "parse_mode": "HTML", "reply_markup": raw_kb},
                     timeout=10,
@@ -544,7 +558,7 @@ async def cb_group_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Показываем поиск
     await query.edit_message_text(
-        f"{CLOCK} Устанавливаю группу <b>{group}</b>...",
+        f"{CLOCK} Устанавливаю группу <b>{_esc(group)}</b>...",
         parse_mode="HTML",
     )
 
@@ -559,7 +573,7 @@ async def cb_group_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Уведомление об успехе
     notice = await context.bot.send_message(
         chat_id=chat_id,
-        text=f"{CHECK} Группа установлена: <b>{group}</b>",
+        text=f"{CHECK} Группа установлена: <b>{_esc(group)}</b>",
         parse_mode="HTML",
     )
     import asyncio as _asyncio
@@ -579,6 +593,22 @@ async def receive_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     group   = update.message.text.strip()
     corp_id = _resolve_corp(chat_id)
 
+    # Валидация длины
+    if len(group) > 50:
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+        msg_id = context.user_data.get("waiting_group_msg_id")
+        if msg_id:
+            kb = [[InlineKeyboardButton(f"{BACK} Назад", callback_data="m:back")]]
+            await context.bot.edit_message_text(
+                chat_id=chat_id, message_id=msg_id,
+                text=f"{CROSS} Слишком длинное название (макс. 50 символов).",
+                parse_mode="HTML", reply_markup=InlineKeyboardMarkup(kb),
+            )
+        return WAITING_GROUP
+
     # Удаляем сообщение пользователя
     try:
         await update.message.delete()
@@ -592,7 +622,7 @@ async def receive_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=msg_id,
-                text=f"{CLOCK} Ищу группу <b>{group}</b>...",
+                text=f"{CLOCK} Ищу группу <b>{_esc(group)}</b>...",
                 parse_mode="HTML",
             )
         except Exception:
@@ -620,7 +650,7 @@ async def receive_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=msg_id,
-                    text=f"{WARN} Группа <b>{group}</b> не найдена.\n\n"
+                    text=f"{WARN} Группа <b>{_esc(group)}</b> не найдена.\n\n"
                          f"Проверь название в таблице расписания и попробуй снова.",
                     parse_mode="HTML",
                     reply_markup=InlineKeyboardMarkup(kb),
@@ -643,7 +673,7 @@ async def receive_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Показываем уведомление об успехе, потом меню
     notice = await context.bot.send_message(
         chat_id=chat_id,
-        text=f"{CHECK} Группа установлена: <b>{group}</b>",
+        text=f"{CHECK} Группа установлена: <b>{_esc(group)}</b>",
         parse_mode="HTML",
     )
     import asyncio
@@ -674,7 +704,7 @@ async def cmd_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     add_subscriber(chat_id)
     corp = CORPS_BY_ID.get(_resolve_corp(chat_id), {})
     await update.message.reply_text(
-        f"{CHECK} Подписка оформлена! Корпус: <b>{corp.get('name', '')}</b> · Группа: <b>{group}</b>",
+        f"{CHECK} Подписка оформлена! Корпус: <b>{_esc(corp.get('name', ''))}</b> · Группа: <b>{_esc(group)}</b>",
         parse_mode="HTML",
     )
 
@@ -712,7 +742,7 @@ async def cmd_setgroup_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=msg_id,
-                text=f"{CLOCK} Ищу группу <b>{group}</b>...",
+                text=f"{CLOCK} Ищу группу <b>{_esc(group)}</b>...",
                 parse_mode="HTML",
             )
         except Exception:
@@ -735,7 +765,7 @@ async def cmd_setgroup_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
 
     await update.message.reply_text(
-        f"{CHECK} Группа установлена: <b>{group}</b>",
+        f"{CHECK} Группа установлена: <b>{_esc(group)}</b>",
         parse_mode="HTML",
     )
 
@@ -894,6 +924,8 @@ async def broadcast(application, file_id: str, corp_id: str) -> int:
         try:
             await _send_with_gif(application.bot, chat_id, text)
             sent += 1
+            if sent % 25 == 0:
+                await asyncio.sleep(1)
         except Exception as e:
             logger.warning("Ошибка отправки %s: %s", chat_id, e)
     return sent
@@ -931,6 +963,8 @@ async def broadcast_changed(application, file_id: str, corp_id: str, diffs: dict
         try:
             await _send_with_gif(application.bot, chat_id, text)
             sent += 1
+            if sent % 25 == 0:
+                await asyncio.sleep(1)
         except Exception as e:
             logger.warning("Ошибка отправки %s: %s", chat_id, e)
     return sent
@@ -1017,9 +1051,11 @@ def _build_ptb_app():
             CallbackQueryHandler(cb_corp,  pattern=r"^corp:"),
         ],
         per_message=False,
+        conversation_timeout=300,
     )
 
     ptb.add_handler(CommandHandler("start",       cmd_start))
+    ptb.add_handler(CommandHandler("status",      cmd_status))
     ptb.add_handler(CommandHandler("groupmode",   cmd_groupmode))
     ptb.add_handler(CommandHandler("today",       lambda u, c: _cmd_direct(u, c, "today")))
     ptb.add_handler(CommandHandler("new",         lambda u, c: _cmd_direct(u, c, "new")))
