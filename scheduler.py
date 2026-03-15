@@ -210,15 +210,43 @@ async def _check_all_corps(application, broadcast_new, broadcast_changed, alert_
                 await alert_error(application, f"[{corp['name']}] {e}")
 
 
+def _get_interval_minutes() -> int:
+    """
+    Умный интервал проверки:
+    - Воскресенье: раз в час (расписание уже появилось в пт/сб)
+    - Остальные дни: CHECK_INTERVAL_MINUTES
+    """
+    from datetime import datetime
+    if datetime.now().weekday() == 6:  # 6 = воскресенье
+        return 60
+    return CHECK_INTERVAL_MINUTES
+
+
+async def _smart_check(application, broadcast_new, broadcast_changed, alert_error, on_broadcast_done):
+    """Обёртка с умным интервалом — перепланирует себя в зависимости от дня недели."""
+    await _check_all_corps(application, broadcast_new, broadcast_changed, alert_error, on_broadcast_done)
+
+    # Обновляем интервал следующего запуска
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+    scheduler = application.bot_data.get("scheduler")
+    if scheduler:
+        interval = _get_interval_minutes()
+        scheduler.reschedule_job("drive_check", trigger="interval", minutes=interval)
+        logger.debug("Следующая проверка через %d мин.", interval)
+
+
 def start_scheduler(application, broadcast_new, broadcast_changed, alert_error, on_broadcast_done):
     scheduler = AsyncIOScheduler()
+    application.bot_data["scheduler"] = scheduler
+
+    interval = _get_interval_minutes()
     scheduler.add_job(
-        _check_all_corps,
+        _smart_check,
         trigger="interval",
-        minutes=CHECK_INTERVAL_MINUTES,
+        minutes=interval,
         args=[application, broadcast_new, broadcast_changed, alert_error, on_broadcast_done],
         id="drive_check",
         replace_existing=True,
     )
     scheduler.start()
-    logger.info("Планировщик запущен: каждые %d мин., корпусов: %d", CHECK_INTERVAL_MINUTES, len(CORPS))
+    logger.info("Планировщик запущен: каждые %d мин. (сейчас), корпусов: %d", interval, len(CORPS))
