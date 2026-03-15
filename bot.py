@@ -50,7 +50,7 @@ ADMIN_ID      = int(os.environ.get("ADMIN_ID", "0"))
 DEFAULT_GROUP = os.environ.get("GROUP_NAME", "")
 DEFAULT_CORP  = os.environ.get("CORP_ID", "corp3")
 ALERT_CHAT_ID = os.environ.get("ALERT_CHAT_ID", "")
-GIF_PATH      = os.path.join(os.path.dirname(__file__), "emoji.gif")
+GIF_PATH      = os.path.join(os.path.dirname(__file__), "emoji.mp4")
 
 # ConversationHandler states
 WAITING_GROUP  = 1
@@ -104,21 +104,19 @@ async def _send_with_gif(bot, chat_id: int, text: str, reply_markup=None):
     gif_id = _get_gif_id()
     try:
         if gif_id:
-            await bot.send_document(
-                chat_id=chat_id, document=gif_id,
+            await bot.send_animation(
+                chat_id=chat_id, animation=gif_id,
                 caption=text, parse_mode="HTML",
                 reply_markup=reply_markup,
             )
         else:
             with open(GIF_PATH, "rb") as f:
-                from telegram import InputFile
-                msg = await bot.send_document(
-                    chat_id=chat_id,
-                    document=InputFile(f, filename="schedule.gif"),
+                msg = await bot.send_animation(
+                    chat_id=chat_id, animation=f,
                     caption=text, parse_mode="HTML",
                     reply_markup=reply_markup,
                 )
-            _gif_file_id = msg.document.file_id
+            _gif_file_id = msg.animation.file_id
             save_gif_file_id(_gif_file_id)
     except Exception as e:
         logger.warning("Ошибка гифки: %s", e.args[0] if e.args else type(e).__name__)
