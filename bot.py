@@ -559,16 +559,23 @@ async def cb_course(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML",
     )
 
-    # Загружаем группы из последнего файла Drive
+    # Загружаем группы
     try:
-        from api import _extract_groups_from_file
-        from drive import export_as_xlsx
-        file_id = get_latest_file_id(corp_id)
-        if not file_id:
-            raise Exception("Файлов не найдено")
-        corp_cfg = CORPS_BY_ID.get(corp_id, {})
-        xlsx = export_as_xlsx(file_id)
-        all_groups = _extract_groups_from_file(xlsx, corp_cfg.get("table_format", "type_a"))
+        if corp_id == "corp2":
+            # Для корпуса 2 — из основного файла расписания
+            from sheets import _get_corp2_main_file
+            from api import _extract_groups_from_corp2_main
+            xlsx = _get_corp2_main_file()
+            all_groups = _extract_groups_from_corp2_main(xlsx) if xlsx else []
+        else:
+            from api import _extract_groups_from_file
+            from drive import export_as_xlsx
+            file_id = get_latest_file_id(corp_id)
+            if not file_id:
+                raise Exception("Файлов не найдено")
+            corp_cfg = CORPS_BY_ID.get(corp_id, {})
+            xlsx = export_as_xlsx(file_id)
+            all_groups = _extract_groups_from_file(xlsx, corp_cfg.get("table_format", "type_a"))
     except Exception as e:
         logger.warning("Ошибка загрузки групп: %s", e)
         all_groups = []
