@@ -89,15 +89,6 @@ def get_groups(corp: str = Query(..., description="ID корпуса, напри
         raise HTTPException(status_code=404, detail=f"Корпус '{corp}' не найден")
 
     try:
-        # Для корпуса 2 берём группы из основного файла расписания
-        if corp == "corp2":
-            from sheets import _get_corp2_main_file
-            xlsx = _get_corp2_main_file()
-            if not xlsx:
-                return {"corp": corp, "groups": []}
-            groups = _extract_groups_from_corp2_main(xlsx)
-            return {"corp": corp, "groups": groups}
-
         file_id = get_latest_file_id(corp)
         if not file_id:
             return {"corp": corp, "groups": []}
@@ -107,33 +98,6 @@ def get_groups(corp: str = Query(..., description="ID корпуса, напри
     except Exception as e:
         logger.exception("Ошибка /groups")
         raise HTTPException(status_code=500, detail=str(e))
-
-
-def _extract_groups_from_corp2_main(xlsx_bytes: bytes) -> list[str]:
-    """Извлекает список групп из горизонтальной таблицы корпуса 2."""
-    import io, re
-    import openpyxl
-    try:
-        wb = openpyxl.load_workbook(io.BytesIO(xlsx_bytes), data_only=True)
-        ws = wb.active
-        groups = []
-        skip = ('день недели', 'пара')
-        for c in range(1, ws.max_column + 1):
-            val = ws.cell(1, c).value
-            if not val:
-                continue
-            name = str(val).replace('\n', ' ').strip()
-            if any(s in name.lower() for s in skip):
-                continue
-            # Извлекаем короткое название — только код группы
-            m = re.match(r'^(\S+-\d+\s+\S+-\d+)', name)
-            short = m.group(1).strip() if m else name.split('\n')[0].strip()
-            if short and short not in groups:
-                groups.append(short)
-        return groups
-    except Exception as e:
-        logger.error("Ошибка извлечения групп корпуса 2: %s", e)
-        return []
 
 
 # ─── /schedule ────────────────────────────────────────────────────────────────
