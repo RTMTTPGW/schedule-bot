@@ -1238,6 +1238,8 @@ def main():
                 logger.exception("Необработанная ошибка PTB", exc_info=err)
             ptb.add_error_handler(_error_handler)
 
+            # Ждём завершения предыдущего экземпляра
+            await asyncio.sleep(5)
             await ptb.updater.start_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
             logger.info("Бот запущен, API на порту %d", port)
             await api_server.serve()
