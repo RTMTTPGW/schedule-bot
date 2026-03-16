@@ -1225,6 +1225,19 @@ def main():
             await ptb.start()
             # Запускаем планировщик ПОСЛЕ initialize — bot_data уже доступен
             start_scheduler(ptb, broadcast, broadcast_changed, alert_drive_error, on_broadcast_done)
+            # Error handler
+            async def _error_handler(update, context):
+                from telegram.error import Conflict, TimedOut, NetworkError
+                err = context.error
+                if isinstance(err, Conflict):
+                    logger.warning("Конфликт двух экземпляров — ждём завершения старого")
+                    return
+                if isinstance(err, (TimedOut, NetworkError)):
+                    logger.warning("Сетевая ошибка: %s", type(err).__name__)
+                    return
+                logger.exception("Необработанная ошибка PTB", exc_info=err)
+            ptb.add_error_handler(_error_handler)
+
             await ptb.updater.start_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
             logger.info("Бот запущен, API на порту %d", port)
             await api_server.serve()
