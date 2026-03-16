@@ -132,12 +132,11 @@ def _resolve_group(chat_id: int) -> str | None:
     """Возвращает группу пользователя. DEFAULT_GROUP не используется — каждый выбирает сам."""
     return get_chat_group(chat_id) or None
 
-BACK_KB = InlineKeyboardMarkup([
-    [InlineKeyboardButton(f"{BACK} В меню", callback_data="m:back")]
-])
+BACK_KB       = InlineKeyboardMarkup([[InlineKeyboardButton(f"{BACK} В меню", callback_data="m:back")]])
+DELETE_KB     = InlineKeyboardMarkup([[InlineKeyboardButton("🗑 Удалить", callback_data="del:msg")]])
 
 async def _fetch_and_send(bot, chat_id: int, file_id: str, group: str, corp_id: str):
-    kb = None if is_group_mode(chat_id) else BACK_KB
+    kb = DELETE_KB if is_group_mode(chat_id) else BACK_KB
     data = parse_schedule(file_id, group, corp_id)
     if not data:
         await bot.send_message(
@@ -356,9 +355,20 @@ async def cb_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         group   = _resolve_group(chat_id)
         corp_id = _resolve_corp(chat_id)
         if not corp_id or not group:
-            await query.answer(
-                "Сначала выбери корпус и группу! Нажми Сменить корпус, затем Сменить группу.",
-                show_alert=True
+            await query.answer()
+            # Открываем выбор корпуса если не выбран
+            try:
+                await query.message.delete()
+            except Exception:
+                pass
+            kb = [[InlineKeyboardButton(c["name"], callback_data=f"corp:{c['id']}")]
+                  for c in CORPS]
+            kb.append([InlineKeyboardButton(f"{BACK} Назад", callback_data="m:back")])
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"{PIN} Сначала выбери корпус и группу:",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(kb),
             )
             return
         wait = _check_cooldown(chat_id, "today")
@@ -381,9 +391,19 @@ async def cb_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         group   = _resolve_group(chat_id)
         corp_id = _resolve_corp(chat_id)
         if not corp_id or not group:
-            await query.answer(
-                "Сначала выбери корпус и группу! Нажми Сменить корпус, затем Сменить группу.",
-                show_alert=True
+            await query.answer()
+            try:
+                await query.message.delete()
+            except Exception:
+                pass
+            kb = [[InlineKeyboardButton(c["name"], callback_data=f"corp:{c['id']}")]
+                  for c in CORPS]
+            kb.append([InlineKeyboardButton(f"{BACK} Назад", callback_data="m:back")])
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"{PIN} Сначала выбери корпус и группу:",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(kb),
             )
             return
         wait = _check_cooldown(chat_id, "new")
@@ -504,6 +524,18 @@ async def cb_corp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     set_chat_corp(chat_id, corp_id)
     try:
         await query.message.delete()
+    except Exception:
+        pass
+    # Уведомление о смене корпуса
+    notice = await context.bot.send_message(
+        chat_id=chat_id,
+        text=f"{CHECK} Корпус установлен: <b>{corp['name']}</b>",
+        parse_mode="HTML",
+    )
+    import asyncio as _ai
+    await _ai.sleep(1.5)
+    try:
+        await notice.delete()
     except Exception:
         pass
     await _send_menu(context.bot, chat_id)
@@ -874,6 +906,39 @@ async def cmd_groupmode(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сбрасывает настройки пользователя. Только для ADMIN_ID."""
+    if not update.message:
+        return
+    user_id = update.effective_user.id
+
+    # В личке — сбрасываем свои настройки
+    # С аргументом chat_id — сбрасываем чужие (только ADMIN_ID)
+    if context.args and ADMIN_ID and user_id == ADMIN_ID:
+        try:
+            target_id = int(context.args[0])
+        except ValueError:
+            await update.message.reply_text(f"{CROSS} Неверный chat_id.", parse_mode="HTML")
+            return
+    else:
+        target_id = update.effective_chat.id
+
+    # Только ADMIN_ID может сбрасывать чужие настройки
+    if target_id != update.effective_chat.id and (not ADMIN_ID or user_id != ADMIN_ID):
+        return
+
+    from db import _conn
+    with _conn() as con:
+        con.execute("DELETE FROM chat_settings WHERE chat_id = ?", (target_id,))
+        con.execute("DELETE FROM subscribers WHERE chat_id = ?", (target_id,))
+
+    await update.message.reply_text(
+        f"{CHECK} Настройки сброшены для chat_id <code>{target_id}</code>.\n"
+        "Группа, корпус и подписка удалены.",
+        parse_mode="HTML",
+    )
+
+
 # ─── /status (только для ADMIN_ID) ──────────────────────────────────────────
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1025,6 +1090,16 @@ async def alert_drive_error(application, error_msg: str):
 
 # ─── Запуск ───────────────────────────────────────────────────────────────────
 
+async def cb_delete_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Удаляет сообщение с расписанием по нажатию кнопки 🗑 Удалить."""
+    query = update.callback_query
+    await query.answer()
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
+
+
 async def _cmd_direct(update: Update, context: ContextTypes.DEFAULT_TYPE, cmd: str):
     """Прямые команды /today и /new."""
     chat_id = update.effective_chat.id
@@ -1101,6 +1176,7 @@ def _build_ptb_app():
 
     ptb.add_handler(CommandHandler("start",       cmd_start))
     ptb.add_handler(CommandHandler("status",      cmd_status))
+    ptb.add_handler(CommandHandler("reset",       cmd_reset))
     ptb.add_handler(CommandHandler("groupmode",   cmd_groupmode))
     ptb.add_handler(CommandHandler("today",       lambda u, c: _cmd_direct(u, c, "today")))
     ptb.add_handler(CommandHandler("new",         lambda u, c: _cmd_direct(u, c, "new")))
@@ -1109,7 +1185,8 @@ def _build_ptb_app():
     ptb.add_handler(CommandHandler("setcorp",     cmd_setcorp_text))
     ptb.add_handler(CommandHandler("setgroup",    cmd_setgroup_text))
     ptb.add_handler(conv)
-    ptb.add_handler(CallbackQueryHandler(cb_corp, pattern=r"^corp:"))
+    ptb.add_handler(CallbackQueryHandler(cb_corp,       pattern=r"^corp:"))
+    ptb.add_handler(CallbackQueryHandler(cb_delete_msg, pattern=r"^del:"))
 
     return ptb
 
@@ -1130,8 +1207,6 @@ def main():
             logger.info("GIF обновлён — сброс кэша")
 
     ptb = _build_ptb_app()
-    start_scheduler(ptb, broadcast, broadcast_changed, alert_drive_error, on_broadcast_done)
-
     port = int(os.environ.get("PORT", "8000"))
 
     async def run_all():
@@ -1148,6 +1223,8 @@ def main():
         async with ptb:
             await ptb.initialize()
             await ptb.start()
+            # Запускаем планировщик ПОСЛЕ initialize — bot_data уже доступен
+            start_scheduler(ptb, broadcast, broadcast_changed, alert_drive_error, on_broadcast_done)
             await ptb.updater.start_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
             logger.info("Бот запущен, API на порту %d", port)
             await api_server.serve()
