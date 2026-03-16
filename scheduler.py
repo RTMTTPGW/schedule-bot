@@ -114,8 +114,11 @@ async def _check_corp(corp: dict, application, broadcast_new, broadcast_changed)
 
     groups = _get_groups_for_corp(corp_id)
     if not groups:
-        return 0  # нет подписчиков — пропускаем
+        logger.info("[%s] Нет подписчиков — пропускаем", corp["name"])
+        return 0
 
+    logger.info("[%s] Проверяем %d файлов, групп подписчиков: %d",
+                corp["name"], len(files), len(groups))
     sent_count = 0
 
     for file in files:
@@ -123,7 +126,9 @@ async def _check_corp(corp: dict, application, broadcast_new, broadcast_changed)
 
         file_date = _get_file_date_with_cache(file_id, corp)
         if file_date is None or file_date < tomorrow:
-            if not is_file_seen(file_id):
+            # Помечаем только если дата точно в прошлом (не None)
+            # None означает что не смогли прочитать — попробуем снова в следующий раз
+            if file_date is not None and not is_file_seen(file_id):
                 mark_file_seen(file_id)
             continue
 
@@ -180,13 +185,24 @@ async def _check_corp(corp: dict, application, broadcast_new, broadcast_changed)
 async def _check_all_corps(application, broadcast_new, broadcast_changed, alert_error, on_broadcast_done):
     # Получаем корпуса у которых есть подписчики
     active_corps = get_subscribed_corp_ids()
-    # Добавляем дефолтный корпус
-    active_corps.add(DEFAULT_CORP)
+    # Если есть подписчики без corp_id — добавляем дефолтный корпус
+    # (подписались до того как выбрали корпус)
+    all_subs = get_all_subscribers()
+    has_unconfigured = any(not s.get("corp_id") for s in all_subs)
+    if has_unconfigured or all_subs:
+        active_corps.add(DEFAULT_CORP)
+    # Если вообще есть подписчики — проверяем все корпуса где они есть
+    for s in all_subs:
+        if s.get("corp_id"):
+            active_corps.add(s["corp_id"])
+
+    logger.info("Проверка Drive: %d корпусов активны %s, подписчиков: %d",
+                len(active_corps), list(active_corps), len(all_subs))
 
     for corp in CORPS:
         corp_id = corp["id"]
         if corp_id not in active_corps:
-            logger.debug("Корпус %s пропущен (нет подписчиков)", corp_id)
+            logger.info("Корпус %s пропущен (нет подписчиков)", corp_id)
             continue
 
         error_count, alert_sent = get_corp_error_count(corp_id)
