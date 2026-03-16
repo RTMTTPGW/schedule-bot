@@ -39,6 +39,18 @@ def _fmt(val) -> str:
     return str(val).strip()
 
 
+def _split_multi_pair_num(num_str: str) -> list[str]:
+    """
+    Разбивает номер пары "1,2" или "1-2" на ['1', '2'].
+    Для обычных номеров возвращает [num_str].
+    """
+    s = str(num_str).strip()
+    m = re.match(r'^(\d+)[,\-](\d+)$', s)
+    if m:
+        return [m.group(1), m.group(2)]
+    return [s]
+
+
 def _cell(ws, row: int, col: int) -> str:
     """Читает ячейку с учётом объединений."""
     cell = ws.cell(row=row, column=col)
@@ -216,12 +228,13 @@ def _parse_type_ab(ws, group_query: str) -> dict | None:
         if not subject and not teacher:
             continue
 
-        pairs.append({
-            "num":     num,
-            "subject": subject or "—",
-            "teacher": teacher,
-            "room":    room,
-        })
+        for split_num in _split_multi_pair_num(num):
+            pairs.append({
+                "num":     split_num,
+                "subject": subject or "—",
+                "teacher": teacher,
+                "room":    room,
+            })
 
     return {
         "date":  file_date.strftime("%d.%m.%Y") if file_date else "",
@@ -299,12 +312,13 @@ def _parse_type_c(ws, group_query: str) -> dict | None:
         if not subject and not teacher:
             continue
 
-        pairs.append({
-            "num":     num,
-            "subject": subject or "—",
-            "teacher": teacher,
-            "room":    room,
-        })
+        for split_num in _split_multi_pair_num(num):
+            pairs.append({
+                "num":     split_num,
+                "subject": subject or "—",
+                "teacher": teacher,
+                "room":    room,
+            })
 
     return {
         "date":  file_date.strftime("%d.%m.%Y") if file_date else "",
@@ -314,13 +328,180 @@ def _parse_type_c(ws, group_query: str) -> dict | None:
     }
 
 
+
+# ─── Парсер type_d (корпус 2: горизонтальная таблица + замены) ───────────────
+
+DAYS_RU_LIST = ['ПОНЕДЕЛЬНИК','ВТОРНИК','СРЕДА','ЧЕТВЕРГ','ПЯТНИЦА','СУББОТА']
+
+
+def _get_week_number(d=None) -> int:
+    """1 или 2 — номер учебной недели по ISO."""
+    from datetime import date as _date
+    if d is None:
+        d = _date.today()
+    return 1 if d.isocalendar()[1] % 2 == 1 else 2
+
+
+def _cv(ws, r: int, c: int) -> str:
+    """Значение ячейки с учётом объединений."""
+    cell = ws.cell(r, c)
+    for rng in ws.merged_cells.ranges:
+        if cell.coordinate in rng:
+            return str(ws.cell(rng.min_row, rng.min_col).value or '').strip()
+    return str(cell.value or '').strip()
+
+
+def _first_line(s: str) -> str:
+    return s.split('\n')[0].strip()
+
+
+def _group_match_horiz(header: str, query: str) -> bool:
+    def n(s): return re.sub(r'\s+', '', _first_line(s)).lower()
+    h, q = n(header), n(query)
+    if h == q: return True
+    if h.startswith(q):
+        rest = h[len(q):]
+        return not rest or not rest[0].isalnum()
+    return q in h
+
+
+def _week_val(val: str, week: int) -> str:
+    """Извлекает значение для нужной недели из ячейки с маркерами НЕД1/НЕД2."""
+    if not val: return ''
+    if val.upper().strip() in ('НЕТ',): return 'НЕТ'
+    if not re.search(r'\dНЕД|\d\s*НЕД', val, re.IGNORECASE): return val
+    parts = re.split(r'\n|(?=/?\s*\d\s*НЕД)', val, flags=re.IGNORECASE)
+    for part in parts:
+        m = re.match(r'\s*/?\s*(\d)\s*НЕД[-\.\s]*(.*)', part.strip(), re.IGNORECASE)
+        if m and int(m.group(1)) == week:
+            r2 = m.group(2).strip().strip('-').strip('/').strip()
+            return r2 or ''
+    return ''
+
+
+def _split_multi_pair(pn: str, subj: str, teacher: str, room: str) -> list:
+    """Разбивает '1,2 МДК' на две отдельные пары."""
+    cm = re.match(r'^(\d+)[,\s]+(\d+)\s+(.+)$', subj)
+    if cm:
+        return [
+            {'num': cm.group(1), 'subject': cm.group(3).strip(), 'teacher': teacher, 'room': room},
+            {'num': cm.group(2), 'subject': cm.group(3).strip(), 'teacher': teacher, 'room': room},
+        ]
+    return [{'num': pn, 'subject': subj, 'teacher': teacher, 'room': room}]
+
+
+def _parse_corp2_horizontal(ws, group_query: str, target_date) -> dict | None:
+    """Парсит основную горизонтальную таблицу корпуса 2."""
+    from datetime import date as _date
+    week = _get_week_number(target_date)
+    day_idx = target_date.weekday()
+    if day_idx > 5: return None
+    day_name = DAYS_RU_LIST[day_idx]
+
+    group_col = None
+    for c in range(1, ws.max_column + 1):
+        val = _cv(ws, 1, c)
+        if val and _group_match_horiz(val, group_query):
+            group_col = c
+            break
+    if group_col is None: return None
+
+    day_row = None
+    for r in range(1, ws.max_row + 1):
+        if _cv(ws, r, 1).upper() == day_name:
+            day_row = r
+            break
+    if day_row is None: return None
+
+    pairs = []
+    for offset in range(0, 8):
+        r = day_row + offset
+        pn_raw = _cv(ws, r, 2)
+        try:
+            pn = str(int(float(pn_raw)))
+        except (ValueError, TypeError):
+            continue
+
+        subj_raw = _cv(ws, r, group_col)
+        teacher  = _first_line(_cv(ws, r, group_col + 1))
+        room     = _first_line(_cv(ws, r, group_col + 2))
+        subj     = _week_val(subj_raw, week)
+
+        if not subj or subj.upper() in ('НЕТ', '-', ''):
+            continue
+
+        pairs.extend(_split_multi_pair(pn, subj, teacher, room))
+
+    return {
+        'date':  target_date.strftime('%d.%m.%Y'),
+        'day':   day_name.capitalize(),
+        'group': group_query,
+        'pairs': pairs,
+        'week':  week,
+    }
+
+
+def _parse_corp2_substitutions(ws, group_query: str) -> dict:
+    """Парсит файл замен, возвращает {pair_num: pair_data}."""
+    def n(s): return re.sub(r'\s+', '', str(s)).lower()
+    q = n(group_query)
+    in_group = False
+    subs = {}
+    for r in range(1, ws.max_row + 1):
+        c1 = str(ws.cell(r, 1).value or '').strip()
+        c2 = str(ws.cell(r, 2).value or '').strip()
+        c3 = str(ws.cell(r, 3).value or '').strip()
+        c4 = str(ws.cell(r, 4).value or '').strip()
+        # Заголовок группы
+        if (not c1 or c1 in (' ',)) and c2 and c2 not in ('Дисциплина', ' '):
+            h = n(c2)
+            if q in h or h.startswith(q):
+                in_group = True
+                subs = {}
+            elif in_group:
+                break
+            else:
+                in_group = False
+            continue
+        if not in_group: continue
+        m = re.match(r'(\d+)', c1)
+        if not m: continue
+        pn = m.group(1)
+        if c2 and c2 not in (' ',):
+            subs[pn] = {'subject': c2, 'teacher': c3, 'room': c4}
+    return subs
+
+
+def _parse_type_d(main_ws, subs_ws_list: list, group_query: str, target_date) -> dict | None:
+    """
+    Полный парсер корпуса 2:
+    1. Берёт базовое расписание из горизонтальной таблицы
+    2. Накладывает замены из файлов замен (если есть на нужную дату)
+    """
+    result = _parse_corp2_horizontal(main_ws, group_query, target_date)
+    if result is None: return None
+
+    for subs_ws in subs_ws_list:
+        subs = _parse_corp2_substitutions(subs_ws, group_query)
+        if subs:
+            base = {p['num']: p for p in result['pairs']}
+            for pn, sub in subs.items():
+                if sub['subject'].lower() in ('нет', ''):
+                    base.pop(pn, None)
+                else:
+                    base[pn] = {'num': pn, **sub}
+            result['pairs'] = sorted(base.values(), key=lambda x: int(x['num']))
+    return result
+
 # ─── Публичный интерфейс ──────────────────────────────────────────────────────
 
-def parse_file(xlsx_bytes: bytes, table_format: str, group_query: str) -> dict | None:
+def parse_file(xlsx_bytes: bytes, table_format: str, group_query: str,
+               subs_xlsx_list: list | None = None, target_date=None) -> dict | None:
     """
     Парсит xlsx-файл и возвращает расписание для группы.
-    table_format: "type_a", "type_b", "type_c"
-    Возвращает None если группа не найдена.
+    table_format: "type_a", "type_b", "type_c", "type_d"
+    subs_xlsx_list: список bytes файлов замен (только для type_d)
+    target_date: дата для которой ищем расписание (только для type_d)
     """
     try:
         wb = openpyxl.load_workbook(io.BytesIO(xlsx_bytes), data_only=True)
@@ -333,6 +514,17 @@ def parse_file(xlsx_bytes: bytes, table_format: str, group_query: str) -> dict |
         return _parse_type_ab(ws, group_query)
     elif table_format == "type_c":
         return _parse_type_c(ws, group_query)
+    elif table_format == "type_d":
+        from datetime import date as _date
+        td = target_date or _date.today()
+        subs_ws_list = []
+        for subs_bytes in (subs_xlsx_list or []):
+            try:
+                subs_wb = openpyxl.load_workbook(io.BytesIO(subs_bytes), data_only=True)
+                subs_ws_list.append(subs_wb.active)
+            except Exception as e:
+                logger.warning("Ошибка открытия файла замен: %s", e)
+        return _parse_type_d(ws, subs_ws_list, group_query, td)
     else:
         logger.warning("Неизвестный формат таблицы: %s", table_format)
         return None
