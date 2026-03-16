@@ -124,6 +124,7 @@ def _get_corp2_main_file() -> bytes | None:
 
     # Кэш на 1 час
     if _corp2_main_cache and time.time() - _corp2_main_cache[2] < 3600:
+        logger.info("Корпус 2: основной файл из кэша")
         return _corp2_main_cache[1]
 
     corp2 = CORPS_BY_ID["corp2"]
@@ -131,7 +132,10 @@ def _get_corp2_main_file() -> bytes | None:
 
     try:
         from drive import get_flat_files
+        logger.info("Корпус 2: получаем список файлов из папки %s", corp2["folder_id"])
         files = get_flat_files(corp2["folder_id"])
+        logger.info("Корпус 2: найдено %d файлов: %s", len(files), [f["name"] for f in files[:5]])
+
         main_file = None
         for f in files:
             if keyword.lower() in f["name"].lower():
@@ -139,12 +143,14 @@ def _get_corp2_main_file() -> bytes | None:
                 break
 
         if not main_file:
-            logger.warning("Основной файл корпуса 2 не найден (ключ: %s)", keyword)
+            logger.warning("Основной файл корпуса 2 не найден (ключ: '%s'), файлы: %s",
+                          keyword, [f["name"] for f in files[:5]])
             return None
 
+        logger.info("Корпус 2: скачиваем основной файл '%s' (%s)", main_file["name"], main_file["id"])
         xlsx = export_as_xlsx(main_file["id"])
+        logger.info("Корпус 2: основной файл загружен, %d байт", len(xlsx))
         _corp2_main_cache = (main_file["id"], xlsx, time.time())
-        logger.info("Основной файл корпуса 2 загружен: %s", main_file["name"])
         return xlsx
     except Exception as e:
         logger.error("Ошибка загрузки основного файла корпуса 2: %s", e)
