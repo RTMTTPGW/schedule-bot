@@ -277,7 +277,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text=(
             f"{WAVE} <b>Привет! Я бот расписания ВПТ.</b>\n\n"
             f"{PIN} Показываю расписание для любой группы техникума. "
-            "Работает для всех 4 корпусов.\n\n"
+            "Работает для 1,2,3 корпусов.\n\n"
             "<b>Как начать:</b>\n"
             "1. Нажми \"🏢 Сменить корпус\" и выбери свой\n"
             "2. Нажми \"👥 Сменить группу\" — выбери курс и группу\n"
@@ -288,7 +288,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Добавь бота в чат, настрой под свою группу и напиши /groupmode — "
             "бот будет без кнопок и не будет мешать, но автоматически пришлёт расписание когда оно появится.\n"
             "Команда доступна только администраторам чата.\n\n"
-            "⚠️ <b>2 корпус не поддерживается</b> — Таблицы делают какие-то криворукие."
+            "⚠️ <b>2 корпус не поддерживается</b> — Таблицы там делают какие-то криворукие.."
         ),
         parse_mode="HTML",
     )
@@ -360,7 +360,7 @@ async def cb_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
             kb = [[InlineKeyboardButton(c["name"], callback_data=f"corp:{c['id']}")]
-                  for c in CORPS]
+                  for c in CORPS if not c.get("unsupported")]
             kb.append([InlineKeyboardButton(f"{BACK} Назад", callback_data="m:back")])
             await context.bot.send_message(
                 chat_id=chat_id,
@@ -395,7 +395,7 @@ async def cb_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
             kb = [[InlineKeyboardButton(c["name"], callback_data=f"corp:{c['id']}")]
-                  for c in CORPS]
+                  for c in CORPS if not c.get("unsupported")]
             kb.append([InlineKeyboardButton(f"{BACK} Назад", callback_data="m:back")])
             await context.bot.send_message(
                 chat_id=chat_id,
@@ -427,7 +427,7 @@ async def cb_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
         kb = [[InlineKeyboardButton(c["name"], callback_data=f"corp:{c['id']}")]
-              for c in CORPS]
+              for c in CORPS if not c.get("unsupported")]
         kb.append([InlineKeyboardButton(f"{BACK} Назад", callback_data="m:back")])
         await context.bot.send_message(
             chat_id=chat_id,
@@ -548,26 +548,58 @@ async def cb_course(update: Update, context: ContextTypes.DEFAULT_TYPE):
     course  = int(query.data.split(":")[1])
     corp_id = _resolve_corp(chat_id)
 
-    context.user_data["selected_course"]    = course
+    context.user_data["selected_course"]      = course
     context.user_data["course_select_msg_id"] = query.message.message_id
 
-    # Показываем загрузку
-    await query.edit_message_text(
-        f"{CLOCK} Загружаю список групп {course} курса...",
-        parse_mode="HTML",
-    )
+    # Анимация загрузки — три точки
+    async def animate_loading():
+        dots = [".", "..", "..."]
+        for i in range(9):  # 3 цикла × 3 варианта = ~9 секунд
+            try:
+                await query.edit_message_text(
+                    f"{CLOCK} Загружаю список групп {course} курса{dots[i % 3]}",
+                    parse_mode="HTML",
+                )
+                await asyncio.sleep(1)
+            except Exception:
+                break
 
-    # Загружаем группы из последнего файла Drive
+    # Запускаем анимацию и загрузку параллельно
+    async def load_groups():
+        try:
+            from api import _extract_groups_from_file
+            from drive import export_as_xlsx
+            file_id = get_latest_file_id(corp_id)
+            if not file_id:
+                raise Exception("Файлов не найдено")
+            corp_cfg = CORPS_BY_ID.get(corp_id, {})
+            xlsx = export_as_xlsx(file_id)
+            return _extract_groups_from_file(xlsx, corp_cfg.get("table_format", "type_a"))
+        except Exception as e:
+            logger.warning("Ошибка загрузки групп: %s", e)
+            return []
+
+    anim_task = asyncio.create_task(animate_loading())
     try:
-        from api import _extract_groups_from_file
-        from drive import export_as_xlsx
-        file_id = get_latest_file_id(corp_id)
-        if not file_id:
-            raise Exception("Файлов не найдено")
-        corp_cfg = CORPS_BY_ID.get(corp_id, {})
-        xlsx = export_as_xlsx(file_id)
-        all_groups = _extract_groups_from_file(xlsx, corp_cfg.get("table_format", "type_a"))
+        all_groups = await asyncio.wait_for(load_groups(), timeout=15)
+        anim_task.cancel()
+    except asyncio.TimeoutError:
+        anim_task.cancel()
+        kb = [
+            [InlineKeyboardButton(f"{BACK} Назад", callback_data="m:setgroup")],
+        ]
+        try:
+            await query.edit_message_text(
+                f"{WARN} Не удалось загрузить список групп.\n\n"
+                "Сервер не ответил за 15 секунд. Попробуй ещё раз.",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(kb),
+            )
+        except Exception:
+            pass
+        return SELECT_COURSE
     except Exception as e:
+        anim_task.cancel()
         logger.warning("Ошибка загрузки групп: %s", e)
         all_groups = []
 
@@ -788,7 +820,7 @@ async def cmd_unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_setcorp_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = [[InlineKeyboardButton(c["name"], callback_data=f"corp:{c['id']}")]
-          for c in CORPS]
+          for c in CORPS if not c.get("unsupported")]
     await update.message.reply_text(
         "🏢 Выбери корпус:",
         reply_markup=InlineKeyboardMarkup(kb),
