@@ -70,25 +70,22 @@ PIN    = '<tg-emoji emoji-id="5397782960512444700">📌</tg-emoji>'
 WRENCH = '<tg-emoji emoji-id="5339081812821957844">⚙️</tg-emoji>'
 BACK   = '◀️'
 
-# ─── Cooldown ─────────────────────────────────────────────────────────────────
+# ─── Cooldown (SQLite-backed, survives restarts) ──────────────────────────────
 COOLDOWN_SECONDS = int(os.environ.get("COOLDOWN_SECONDS", "30"))
-_last_request: dict[tuple, float] = {}
 
 def _check_cooldown(chat_id: int, command: str) -> int | None:
-    now = time.time()
-    # Чистим записи старше 2х кулдаунов
-    expired = [k for k, v in list(_last_request.items()) if now - v > COOLDOWN_SECONDS * 2]
-    for k in expired:
-        del _last_request[k]
-    key = (chat_id, command)
-    last = _last_request.get(key)
-    if last is None:
+    val = kv_get(f"cd:{chat_id}:{command}")
+    if val is None:
         return None
-    remaining = int(COOLDOWN_SECONDS - (now - last))
+    try:
+        last = float(val)
+    except ValueError:
+        return None
+    remaining = int(COOLDOWN_SECONDS - (time.time() - last))
     return remaining if remaining > 0 else None
 
 def _set_cooldown(chat_id: int, command: str):
-    _last_request[(chat_id, command)] = time.time()
+    kv_set(f"cd:{chat_id}:{command}", str(time.time()))
 
 # ─── GIF ──────────────────────────────────────────────────────────────────────
 _gif_file_id: str = ""
