@@ -44,27 +44,45 @@ def _schedule_hash(data: dict) -> str:
     return hashlib.md5(content.encode()).hexdigest()
 
 
+NEW_MARK = '<tg-emoji emoji-id="5382357040008021292">🆕</tg-emoji>'
+
+
 def _diff_schedule(old_data: dict, new_data: dict) -> str:
     old_p = {str(p["num"]): p for p in old_data.get("pairs", [])}
     new_p = {str(p["num"]): p for p in new_data.get("pairs", [])}
+    nm = NEW_MARK
     lines = []
     for num in sorted(set(new_p) - set(old_p)):
         p = new_p[num]
-        lines.append(f"➕ <b>{num} пара добавлена</b>\n   📖 {p['subject']}")
+        subj = p['subject']
+        lines.append(f"\u2795 <b>{num} пара добавлена</b>\n   \U0001f4d6 {subj}")
     for num in sorted(set(old_p) - set(new_p)):
         p = old_p[num]
-        lines.append(f"➖ <b>{num} пара убрана</b>\n   📖 {p['subject']}")
+        subj = p['subject']
+        lines.append(f"\u2796 <b>{num} пара убрана</b>\n   \U0001f4d6 {subj}")
     for num in sorted(set(old_p) & set(new_p)):
         o, n = old_p[num], new_p[num]
         changes = []
         if o["subject"] != n["subject"]:
-            changes.append(f"   📖 {o['subject']} → {n['subject']}")
+            changes.append(
+                "   \U0001f4d6 " + nm + " " + n["subject"] + " " + nm +
+                "\n      (было: " + o["subject"] + ")"
+            )
         if o["teacher"] != n["teacher"]:
-            changes.append(f"   👩‍🏫 {o['teacher']} → {n['teacher']}")
+            changes.append(
+                "   \U0001f469\u200d\U0001f3eb " + nm + " " + n["teacher"] + " " + nm +
+                "\n      (было: " + o["teacher"] + ")"
+            )
         if o["room"] != n["room"]:
-            changes.append(f"   🏠 {o['room']} → {n['room']}")
+            changes.append(
+                "   \U0001f3e0 " + nm + " " + n["room"] + " " + nm +
+                "\n      (было: " + o["room"] + ")"
+            )
         if changes:
-            lines.append(f"✏️ <b>{num} пара изменена</b>\n" + "\n".join(changes))
+            lines.append(
+                "\u270f\ufe0f <b>" + num + " пара изменена</b>\n" +
+                "\n".join(changes)
+            )
     return "\n\n".join(lines)
 
 
