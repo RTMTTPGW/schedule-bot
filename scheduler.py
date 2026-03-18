@@ -169,34 +169,50 @@ async def _check_corp(corp: dict, application, broadcast_new, broadcast_changed)
                 mark_file_seen(file_id)
             continue
 
-        combined_hash = hashlib.md5(
-            "|".join(
-                f"{g}:{_schedule_hash(d)}"
-                for g, d in sorted(new_scheds.items())
-            ).encode()
-        ).hexdigest()
+        # Per-group хэши — рассылаем только тем у кого реально изменилось
+        is_new_file = not is_file_seen(file_id)
 
-        if not is_file_seen(file_id):
+        if is_new_file:
             logger.info("[%s] Новый файл %s → рассылка", corp["name"], file_id)
+            combined_hash = hashlib.md5(
+                "|".join(f"{g}:{_schedule_hash(d)}" for g, d in sorted(new_scheds.items())).encode()
+            ).hexdigest()
             mark_file_seen(file_id, combined_hash, file_date.strftime("%d.%m.%Y"))
             for g, d in new_scheds.items():
                 _last_schedules[f"{file_id}:{corp_id}:{g}"] = d
             sent_count = await broadcast_new(application, file_id, corp_id)
             break
         else:
-            old_hash = get_file_hash(file_id)
-            if old_hash == combined_hash:
-                continue
+            # Проверяем изменения per-group
             diffs: dict[str, str] = {}
+            changed_groups: set[str] = set()
+
             for group, new_data in new_scheds.items():
                 key = f"{file_id}:{corp_id}:{group}"
                 old_data = _last_schedules.get(key)
-                diffs[f"{corp_id}:{group}"] = _diff_schedule(old_data, new_data) if old_data else ""
+                if old_data is None:
+                    _last_schedules[key] = new_data
+                    continue
+                if _schedule_hash(new_data) == _schedule_hash(old_data):
+                    continue  # для этой группы ничего не изменилось
+                diffs[f"{corp_id}:{group}"] = _diff_schedule(old_data, new_data)
                 _last_schedules[key] = new_data
-            logger.info("[%s] Файл %s изменился → уведомление", corp["name"], file_id)
+                changed_groups.add(group)
+
+            if not changed_groups:
+                # Обновляем хэш и пропускаем — изменений нет ни у одной группы
+                combined_hash = hashlib.md5(
+                    "|".join(f"{g}:{_schedule_hash(d)}" for g, d in sorted(new_scheds.items())).encode()
+                ).hexdigest()
+                mark_file_seen(file_id, combined_hash, file_date.strftime("%d.%m.%Y"))
+                continue
+
+            logger.info("[%s] Изменились группы: %s", corp["name"], changed_groups)
+            combined_hash = hashlib.md5(
+                "|".join(f"{g}:{_schedule_hash(d)}" for g, d in sorted(new_scheds.items())).encode()
+            ).hexdigest()
             mark_file_seen(file_id, combined_hash, file_date.strftime("%d.%m.%Y"))
             sent_count = await broadcast_changed(application, file_id, corp_id, diffs)
-
     return sent_count
 
 
