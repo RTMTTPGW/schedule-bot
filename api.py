@@ -12,8 +12,11 @@ import re
 import logging
 from datetime import date
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 import openpyxl
 
 from config import CORPS, CORPS_BY_ID, get_current_semester
@@ -23,13 +26,17 @@ from sheets import get_today_file_id, get_latest_file_id, parse_schedule
 
 logger = logging.getLogger(__name__)
 
+limiter = Limiter(key_func=get_remote_address)
+
 app = FastAPI(
     title="ВПТ Расписание API",
     description="API для получения расписания Волжского политехнического техникума",
     version="1.0.0",
 )
 
-# Разрешаем запросы с любого домена (нужно для GitHub Pages)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -41,7 +48,8 @@ app.add_middleware(
 # ─── /corps ───────────────────────────────────────────────────────────────────
 
 @app.get("/corps")
-def get_corps():
+@limiter.limit("30/minute")
+def get_corps(request: Request):
     """Возвращает список корпусов."""
     return [
         {"id": c["id"], "name": c["name"]}
@@ -82,7 +90,8 @@ def _extract_groups_from_file(xlsx_bytes: bytes, table_format: str) -> list[str]
 
 
 @app.get("/groups")
-def get_groups(corp: str = Query(..., description="ID корпуса, например corp3")):
+@limiter.limit("20/minute")
+def get_groups(request: Request, corp: str = Query(..., description="ID корпуса, например corp3")):
     """Возвращает список групп из последнего файла корпуса."""
     corp_cfg = CORPS_BY_ID.get(corp)
     if not corp_cfg:
@@ -103,7 +112,8 @@ def get_groups(corp: str = Query(..., description="ID корпуса, напри
 # ─── /schedule ────────────────────────────────────────────────────────────────
 
 @app.get("/schedule")
-def get_schedule(
+@limiter.limit("15/minute")
+def get_schedule(request: Request, 
     corp:  str = Query(..., description="ID корпуса, например corp3"),
     group: str = Query(..., description="Название группы, например 2-24 ОРП-1"),
     mode:  str = Query("today", description="today — сегодня, latest — последний файл"),
@@ -147,5 +157,6 @@ def get_schedule(
 # ─── healthcheck ──────────────────────────────────────────────────────────────
 
 @app.get("/health")
-def health():
+@limiter.limit("60/minute")
+def health(request: Request):
     return {"status": "ok"}
