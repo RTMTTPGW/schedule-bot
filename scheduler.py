@@ -41,7 +41,7 @@ def _schedule_hash(data: dict) -> str:
         f"{p['num']}:{p['subject']}:{p['teacher']}:{p['room']}"
         for p in sorted(pairs, key=lambda x: str(x["num"]))
     )
-    return hashlib.md5(content.encode()).hexdigest()
+    return hashlib.sha256(content.encode()).hexdigest()
 
 
 NEW_MARK = '<tg-emoji emoji-id="5382357040008021292">🆕</tg-emoji>'
@@ -174,7 +174,7 @@ async def _check_corp(corp: dict, application, broadcast_new, broadcast_changed)
 
         if is_new_file:
             logger.info("[%s] Новый файл %s → рассылка", corp["name"], file_id)
-            combined_hash = hashlib.md5(
+            combined_hash = hashlib.sha256(
                 "|".join(f"{g}:{_schedule_hash(d)}" for g, d in sorted(new_scheds.items())).encode()
             ).hexdigest()
             mark_file_seen(file_id, combined_hash, file_date.strftime("%d.%m.%Y"))
@@ -201,14 +201,14 @@ async def _check_corp(corp: dict, application, broadcast_new, broadcast_changed)
 
             if not changed_groups:
                 # Обновляем хэш и пропускаем — изменений нет ни у одной группы
-                combined_hash = hashlib.md5(
+                combined_hash = hashlib.sha256(
                     "|".join(f"{g}:{_schedule_hash(d)}" for g, d in sorted(new_scheds.items())).encode()
                 ).hexdigest()
                 mark_file_seen(file_id, combined_hash, file_date.strftime("%d.%m.%Y"))
                 continue
 
             logger.info("[%s] Изменились группы: %s", corp["name"], changed_groups)
-            combined_hash = hashlib.md5(
+            combined_hash = hashlib.sha256(
                 "|".join(f"{g}:{_schedule_hash(d)}" for g, d in sorted(new_scheds.items())).encode()
             ).hexdigest()
             mark_file_seen(file_id, combined_hash, file_date.strftime("%d.%m.%Y"))
