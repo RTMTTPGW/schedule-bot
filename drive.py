@@ -6,9 +6,18 @@ drive.py — работа с Google Drive API.
 import os
 import io
 import re
+import time
 import logging
 import requests
 from datetime import date, datetime
+
+# ─── TTL кэш ──────────────────────────────────────────────────────────────────
+_FOLDER_TTL = 300   # 5 минут — список файлов меняется редко
+_XLSX_TTL   = 600   # 10 минут — файл часто читается несколько раз подряд
+_MAX_XLSX   = 20    # ~20 × ~200 КБ = ~4 МБ памяти
+
+_folder_cache: dict[str, tuple[list, float]] = {}
+_xlsx_cache:   dict[str, tuple[bytes, float]] = {}
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +28,12 @@ REQUEST_TIMEOUT = 30
 # ─── Базовые операции Drive API ───────────────────────────────────────────────
 
 def list_folder(folder_id: str) -> list[dict]:
-    """Возвращает содержимое папки: файлы и подпапки."""
+    """Возвращает содержимое папки. Результат кэшируется на 5 минут."""
+    now = time.monotonic()
+    cached = _folder_cache.get(folder_id)
+    if cached and now - cached[1] < _FOLDER_TTL:
+        return cached[0]
+
     url = "https://www.googleapis.com/drive/v3/files"
     params = {
         "q": f"'{folder_id}' in parents and trashed=false",
@@ -30,7 +44,9 @@ def list_folder(folder_id: str) -> list[dict]:
     }
     resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
     resp.raise_for_status()
-    return resp.json().get("files", [])
+    files = resp.json().get("files", [])
+    _folder_cache[folder_id] = (files, time.monotonic())
+    return files
 
 
 def is_folder(item: dict) -> bool:
@@ -45,7 +61,12 @@ def is_spreadsheet(item: dict) -> bool:
 
 
 def export_as_xlsx(file_id: str) -> bytes:
-    """Экспортирует Google Sheets файл как xlsx."""
+    """Экспортирует Google Sheets файл как xlsx. Результат кэшируется на 10 минут."""
+    now = time.monotonic()
+    cached = _xlsx_cache.get(file_id)
+    if cached and now - cached[1] < _XLSX_TTL:
+        return cached[0]
+
     url = f"https://docs.google.com/spreadsheets/d/{file_id}/export"
     headers = {
         "User-Agent": (
@@ -62,6 +83,11 @@ def export_as_xlsx(file_id: str) -> bytes:
     if resp.content[:4] != b"PK\x03\x04":
         raise Exception(f"Ожидался xlsx, получено {len(resp.content)} байт")
     logger.info("Экспортирован файл %s, %d байт", file_id, len(resp.content))
+    # Кэшируем с ограничением размера
+    if len(_xlsx_cache) >= _MAX_XLSX:
+        oldest = min(_xlsx_cache, key=lambda k: _xlsx_cache[k][1])
+        del _xlsx_cache[oldest]
+    _xlsx_cache[file_id] = (resp.content, time.monotonic())
     return resp.content
 
 
