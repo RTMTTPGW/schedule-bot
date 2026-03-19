@@ -1,5 +1,6 @@
 """
 scheduler.py — проверяет корпуса каждые N минут.
+
 Улучшения:
 - Пропускает корпуса без подписчиков
 - Кэширует даты файлов в SQLite
@@ -19,6 +20,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from config import CORPS, CORPS_BY_ID, get_current_semester
 from db import (
     is_file_seen, mark_file_seen, get_file_hash, get_file_date_cached,
+    cache_file_date_only,
     get_all_subscribers, get_subscribed_corp_ids,
     update_scheduler_stats, get_corp_error_count,
 )
@@ -29,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 CHECK_INTERVAL_MINUTES = int(os.environ.get("CHECK_INTERVAL_MINUTES", "10"))
 DEFAULT_GROUP = os.environ.get("GROUP_NAME", "")
-DEFAULT_CORP  = os.environ.get("CORP_ID", "corp3")
+DEFAULT_CORP = os.environ.get("CORP_ID", "corp3")
 ERROR_THRESHOLD = int(os.environ.get("DRIVE_ERROR_THRESHOLD", "3"))
 
 _last_schedules: dict[str, dict] = {}
@@ -52,37 +54,41 @@ def _diff_schedule(old_data: dict, new_data: dict) -> str:
     new_p = {str(p["num"]): p for p in new_data.get("pairs", [])}
     nm = NEW_MARK
     lines = []
+
     for num in sorted(set(new_p) - set(old_p)):
         p = new_p[num]
         subj = p['subject']
-        lines.append(f"\u2795 <b>{num} пара добавлена</b>\n   \U0001f4d6 {subj}")
+        lines.append(f"\u2795 <b>{num} пара добавлена</b>\n  \U0001f4d6 {subj}")
+
     for num in sorted(set(old_p) - set(new_p)):
         p = old_p[num]
         subj = p['subject']
-        lines.append(f"\u2796 <b>{num} пара убрана</b>\n   \U0001f4d6 {subj}")
+        lines.append(f"\u2796 <b>{num} пара убрана</b>\n  \U0001f4d6 {subj}")
+
     for num in sorted(set(old_p) & set(new_p)):
         o, n = old_p[num], new_p[num]
         changes = []
         if o["subject"] != n["subject"]:
             changes.append(
-                "   \U0001f4d6 " + nm + " " + n["subject"] + " " + nm +
-                "\n      (было: " + o["subject"] + ")"
+                "  \U0001f4d6 " + nm + " " + n["subject"] + " " + nm +
+                "\n  (было: " + o["subject"] + ")"
             )
         if o["teacher"] != n["teacher"]:
             changes.append(
-                "   \U0001f469\u200d\U0001f3eb " + nm + " " + n["teacher"] + " " + nm +
-                "\n      (было: " + o["teacher"] + ")"
+                "  \U0001f469\u200d\U0001f3eb " + nm + " " + n["teacher"] + " " + nm +
+                "\n  (было: " + o["teacher"] + ")"
             )
         if o["room"] != n["room"]:
             changes.append(
-                "   \U0001f3e0 " + nm + " " + n["room"] + " " + nm +
-                "\n      (было: " + o["room"] + ")"
+                "  \U0001f3e0 " + nm + " " + n["room"] + " " + nm +
+                "\n  (было: " + o["room"] + ")"
             )
         if changes:
             lines.append(
                 "\u270f\ufe0f <b>" + num + " пара изменена</b>\n" +
                 "\n".join(changes)
             )
+
     return "\n\n".join(lines)
 
 
@@ -97,7 +103,11 @@ def _get_groups_for_corp(corp_id: str) -> set[str]:
 
 
 def _get_file_date_with_cache(file_id: str, corp: dict) -> date | None:
-    """Возвращает дату файла — сначала из кэша, потом из самого файла."""
+    """Возвращает дату файла — сначала из кэша, потом из самого файла.
+
+    ВАЖНО: кэширует дату через cache_file_date_only — это НЕ помечает файл
+    как обработанный (is_file_seen останется False до реальной рассылки).
+    """
     cached = get_file_date_cached(file_id)
     if cached:
         try:
@@ -112,16 +122,18 @@ def _get_file_date_with_cache(file_id: str, corp: dict) -> date | None:
         xlsx = export_as_xlsx(file_id)
         file_date = get_file_date(xlsx, corp["table_format"])
         if file_date:
-            # Сохраняем в кэш
-            mark_file_seen(file_id, file_date=file_date.strftime("%d.%m.%Y"))
-        return file_date
+            # ИСПРАВЛЕНИЕ: используем cache_file_date_only вместо mark_file_seen,
+            # чтобы не помечать файл как обработанный раньше времени.
+            cache_file_date_only(file_id, file_date.strftime("%d.%m.%Y"))
+            return file_date
     except Exception as e:
         logger.warning("Ошибка чтения даты %s: %s", file_id, e)
-        return None
+
+    return None
 
 
 async def _check_corp(corp: dict, application, broadcast_new, broadcast_changed):
-    corp_id  = corp["id"]
+    corp_id = corp["id"]
     semester = get_current_semester()
     tomorrow = date.today() + timedelta(days=1)
 
@@ -137,17 +149,18 @@ async def _check_corp(corp: dict, application, broadcast_new, broadcast_changed)
 
     logger.info("[%s] Проверяем %d файлов, групп подписчиков: %d",
                 corp["name"], len(files), len(groups))
+
     sent_count = 0
 
     for file in files:
         file_id = file["id"]
-
         file_date = _get_file_date_with_cache(file_id, corp)
+
         if file_date is None or file_date < tomorrow:
             # Помечаем только если дата точно в прошлом (не None)
             # None означает что не смогли прочитать — попробуем снова в следующий раз
             if file_date is not None and not is_file_seen(file_id):
-                mark_file_seen(file_id)
+                mark_file_seen(file_id, sched_hash="__skipped__")
             continue
 
         try:
@@ -155,7 +168,7 @@ async def _check_corp(corp: dict, application, broadcast_new, broadcast_changed)
         except Exception as e:
             logger.warning("[%s] Ошибка скачивания %s: %s", corp["name"], file_id, e)
             if not is_file_seen(file_id):
-                mark_file_seen(file_id)
+                mark_file_seen(file_id, sched_hash="__error__")
             continue
 
         new_scheds: dict[str, dict] = {}
@@ -166,7 +179,7 @@ async def _check_corp(corp: dict, application, broadcast_new, broadcast_changed)
 
         if not new_scheds:
             if not is_file_seen(file_id):
-                mark_file_seen(file_id)
+                mark_file_seen(file_id, sched_hash="__empty__")
             continue
 
         # Per-group хэши — рассылаем только тем у кого реально изменилось
@@ -178,10 +191,13 @@ async def _check_corp(corp: dict, application, broadcast_new, broadcast_changed)
                 "|".join(f"{g}:{_schedule_hash(d)}" for g, d in sorted(new_scheds.items())).encode()
             ).hexdigest()
             mark_file_seen(file_id, combined_hash, file_date.strftime("%d.%m.%Y"))
+
             for g, d in new_scheds.items():
                 _last_schedules[f"{file_id}:{corp_id}:{g}"] = d
+
             sent_count = await broadcast_new(application, file_id, corp_id)
             break
+
         else:
             # Проверяем изменения per-group
             diffs: dict[str, str] = {}
@@ -193,8 +209,10 @@ async def _check_corp(corp: dict, application, broadcast_new, broadcast_changed)
                 if old_data is None:
                     _last_schedules[key] = new_data
                     continue
+
                 if _schedule_hash(new_data) == _schedule_hash(old_data):
                     continue  # для этой группы ничего не изменилось
+
                 diffs[f"{corp_id}:{group}"] = _diff_schedule(old_data, new_data)
                 _last_schedules[key] = new_data
                 changed_groups.add(group)
@@ -213,18 +231,21 @@ async def _check_corp(corp: dict, application, broadcast_new, broadcast_changed)
             ).hexdigest()
             mark_file_seen(file_id, combined_hash, file_date.strftime("%d.%m.%Y"))
             sent_count = await broadcast_changed(application, file_id, corp_id, diffs)
+
     return sent_count
 
 
 async def _check_all_corps(application, broadcast_new, broadcast_changed, alert_error, on_broadcast_done):
     # Получаем корпуса у которых есть подписчики
     active_corps = get_subscribed_corp_ids()
+
     # Если есть подписчики без corp_id — добавляем дефолтный корпус
     # (подписались до того как выбрали корпус)
     all_subs = get_all_subscribers()
     has_unconfigured = any(not s.get("corp_id") for s in all_subs)
     if has_unconfigured or all_subs:
         active_corps.add(DEFAULT_CORP)
+
     # Если вообще есть подписчики — проверяем все корпуса где они есть
     for s in all_subs:
         if s.get("corp_id"):
@@ -240,22 +261,17 @@ async def _check_all_corps(application, broadcast_new, broadcast_changed, alert_
             continue
 
         error_count, alert_sent = get_corp_error_count(corp_id)
-
         try:
             sent = await _check_corp(corp, application, broadcast_new, broadcast_changed)
             update_scheduler_stats(corp_id, success=True)
-
             if sent and sent > 0:
                 await on_broadcast_done(application, corp["name"], sent)
-
         except Exception as e:
             error_count += 1
             logger.exception("Ошибка проверки корпуса %s (попытка %d)", corp_id, error_count)
-
             send_alert = error_count >= ERROR_THRESHOLD and not alert_sent
             update_scheduler_stats(corp_id, success=False,
                                    error_count=error_count, alert_sent=send_alert)
-
             if send_alert:
                 await alert_error(application, f"[{corp['name']}] {e}")
 
