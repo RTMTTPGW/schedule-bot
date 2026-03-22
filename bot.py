@@ -13,7 +13,7 @@ def _get_http() -> httpx.AsyncClient:
     return _http_client
 
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo, ReplyKeyboardMarkup, KeyboardButton, MenuButtonWebApp
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     MessageHandler, filters, ContextTypes, ConversationHandler,
@@ -129,8 +129,26 @@ def _resolve_group(chat_id: int) -> str | None:
     """Возвращает группу пользователя. DEFAULT_GROUP не используется — каждый выбирает сам."""
     return get_chat_group(chat_id) or None
 
-BACK_KB       = InlineKeyboardMarkup([[InlineKeyboardButton(f"{BACK} В меню", callback_data="m:back")]])
+BACK_KB       = InlineKeyboardMarkup([[InlineKeyboardButton(f"{BACK} Закрыть", callback_data="del:msg")]])
 DELETE_KB     = InlineKeyboardMarkup([[InlineKeyboardButton("🗑 Удалить", callback_data="del:msg")]])
+
+# ─── ReplyKeyboard — постоянные кнопки в чатбаре ─────────────────────────────
+BTN_TODAY  = "📅 На сегодня"
+BTN_NEW    = "🆕 Последнее новое"
+BTN_CORP   = "🏢 Сменить корпус"
+BTN_GROUP  = "👥 Сменить группу"
+BTN_SUB    = "🔔 Подписаться"
+BTN_UNSUB  = "🔕 Отписаться"
+
+def _reply_kb(subscribed: bool) -> ReplyKeyboardMarkup:
+    sub_btn = BTN_UNSUB if subscribed else BTN_SUB
+    return ReplyKeyboardMarkup(
+        [[KeyboardButton(BTN_TODAY), KeyboardButton(BTN_NEW)],
+         [KeyboardButton(BTN_CORP),  KeyboardButton(BTN_GROUP)],
+         [KeyboardButton(sub_btn)]],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
 
 async def _fetch_and_send(bot, chat_id: int, file_id: str, group: str, corp_id: str):
     kb = DELETE_KB if is_group_mode(chat_id) else BACK_KB
@@ -198,43 +216,27 @@ def _menu_keyboard_ptb(chat_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(kb)
 
 async def _send_msg_with_color_keyboard(bot, chat_id: int, text: str, subscribed: bool):
-    """Отправляет сообщение с цветными кнопками через raw Bot API."""
-    raw_kb = _menu_keyboard_raw(chat_id)
-    try:
-        resp = await _get_http().post(
-                f"{BASE_URL}/sendMessage",
-                json={"chat_id": chat_id, "text": text,
-                      "parse_mode": "HTML", "reply_markup": raw_kb},
-                timeout=10,
-            )
-        if resp.json().get("ok"):
-            return
-    except Exception as e:
-        logger.warning("Raw keyboard failed: %s", e.args[0] if e.args else type(e).__name__)
-    await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML",
-                           reply_markup=_menu_keyboard_ptb(chat_id))
+    """Отправляет сообщение с ReplyKeyboard."""
+    await bot.send_message(
+        chat_id=chat_id,
+        text=text,
+        parse_mode="HTML",
+        reply_markup=_reply_kb(subscribed),
+    )
 
 
 async def _send_menu(bot, chat_id: int):
-    """Отправляет главное меню новым сообщением. В групповом режиме ничего не делает."""
+    """Отправляет статус + ReplyKeyboard. В групповом режиме ничего не делает."""
     if is_group_mode(chat_id):
         return
-    text   = _menu_text(chat_id)
-    raw_kb = _menu_keyboard_raw(chat_id)
-    try:
-        resp = await _get_http().post(
-                f"{BASE_URL}/sendMessage",
-                json={"chat_id": chat_id, "text": text,
-                      "parse_mode": "HTML", "reply_markup": raw_kb},
-                timeout=10,
-            )
-        if resp.json().get("ok"):
-            return
-    except Exception as e:
-        logger.warning("Raw menu failed: %s", e.args[0] if e.args else type(e).__name__)
-    await bot.send_message(chat_id=chat_id, text=text,
-                           parse_mode="HTML", reply_markup=_menu_keyboard_ptb(chat_id))
-
+    text = _menu_text(chat_id)
+    subscribed = is_subscriber(chat_id)
+    await bot.send_message(
+        chat_id=chat_id,
+        text=text,
+        parse_mode="HTML",
+        reply_markup=_reply_kb(subscribed),
+    )
 async def _replace_with_menu(query, chat_id: int):
     """Удаляет текущее сообщение и отправляет меню заново."""
     try:
@@ -277,7 +279,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text=(
             f"{WAVE} <b>Привет! Я бот расписания ВПТ.</b>\n\n"
             f"{PIN} Показываю расписание для любой группы техникума. "
-            "Работает для 1,2,3 корпусов.\n\n"
+            "Работает для всех 4 корпусов.\n\n"
             "<b>Как начать:</b>\n"
             "1. Нажми \"🏢 Сменить корпус\" и выбери свой\n"
             "2. Нажми \"👥 Сменить группу\" — выбери курс и группу\n"
@@ -288,7 +290,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Добавь бота в чат, настрой под свою группу и напиши /groupmode — "
             "бот будет без кнопок и не будет мешать, но автоматически пришлёт расписание когда оно появится.\n"
             "Команда доступна только администраторам чата.\n\n"
-            "⚠️ <b>2 корпус не поддерживается</b> — Таблицы там делают какие-то криворукие.."
+            "⚠️ <b>2 корпус не поддерживается</b> — расписание там ведётся в нестандартном формате."
         ),
         parse_mode="HTML",
     )
@@ -324,7 +326,19 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
-    # В личке — меню с кнопками
+    # Устанавливаем Menu Button (открывает сайт)
+    try:
+        await context.bot.set_chat_menu_button(
+            chat_id=chat_id,
+            menu_button=MenuButtonWebApp(
+                text="🌐 Расписание",
+                web_app=WebAppInfo(url="https://rtmttpgw.github.io/vpt-schedule/"),
+            ),
+        )
+    except Exception:
+        pass
+
+    # В личке — статус + ReplyKeyboard
     if corp_id and group:
         sub_status = f"{CHECK} Авторассылка включена" if subscribed else f"{CROSS} Авторассылка отключена"
         menu_text = (
@@ -463,40 +477,21 @@ async def cb_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("Сначала выбери группу!", show_alert=True)
             return
         add_subscriber(chat_id)
-        # Редактируем меню на месте с обновлённым статусом
-        text   = _menu_text(chat_id)
-        raw_kb = _menu_keyboard_raw(chat_id)
+        await query.answer("Подписка оформлена!")
         try:
-            resp = await _get_http().post(
-                    f"{BASE_URL}/editMessageText",
-                    json={"chat_id": chat_id, "message_id": query.message.message_id,
-                          "text": text, "parse_mode": "HTML", "reply_markup": raw_kb},
-                    timeout=10,
-                )
-            if not resp.json().get("ok"):
-                raise Exception(resp.json().get("description"))
-        except Exception as e:
-            logger.warning("Edit subscribe failed: %s", e.args[0] if e.args else type(e).__name__)
-            await query.edit_message_text(text=text, parse_mode="HTML",
-                                          reply_markup=_menu_keyboard_ptb(chat_id))
+            await query.message.delete()
+        except Exception:
+            pass
+        await _send_menu(context.bot, chat_id)
 
     elif action == "unsubscribe":
         remove_subscriber(chat_id)
-        text   = _menu_text(chat_id)
-        raw_kb = _menu_keyboard_raw(chat_id)
+        await query.answer("Отписка оформлена.")
         try:
-            resp = await _get_http().post(
-                    f"{BASE_URL}/editMessageText",
-                    json={"chat_id": chat_id, "message_id": query.message.message_id,
-                          "text": text, "parse_mode": "HTML", "reply_markup": raw_kb},
-                    timeout=10,
-                )
-            if not resp.json().get("ok"):
-                raise Exception(resp.json().get("description"))
-        except Exception as e:
-            logger.warning("Edit unsubscribe failed: %s", e.args[0] if e.args else type(e).__name__)
-            await query.edit_message_text(text=text, parse_mode="HTML",
-                                          reply_markup=_menu_keyboard_ptb(chat_id))
+            await query.message.delete()
+        except Exception:
+            pass
+        await _send_menu(context.bot, chat_id)
 
     elif action == "back":
         try:
@@ -877,6 +872,162 @@ async def cmd_setgroup_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _send_menu(context.bot, chat_id)
 
 
+# ─── /setup — мастер настройки группового чата ──────────────────────────────
+
+SETUP_CORP   = 10
+SETUP_COURSE = 11
+SETUP_GROUP  = 12
+
+async def cmd_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Пошаговый мастер настройки бота для группового чата."""
+    if not update.message:
+        return
+    chat_id = update.effective_chat.id
+
+    if not await _is_admin(update, context):
+        await update.message.reply_text(
+            f"{CROSS} Только администраторы могут запускать настройку.",
+            parse_mode="HTML",
+        )
+        return
+
+    kb = [[InlineKeyboardButton(c["name"], callback_data=f"setup_corp:{c['id']}")]
+          for c in CORPS if not c.get("unsupported")]
+    await update.message.reply_text(
+        f"{WRENCH} <b>Настройка бота — Шаг 1 из 3</b>\n\n"
+        "Выбери корпус для этого чата:",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(kb),
+    )
+    return SETUP_CORP
+
+
+async def setup_cb_corp(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    corp_id = query.data.split(":")[1]
+    chat_id = query.message.chat.id
+
+    set_chat_corp(chat_id, corp_id)
+    context.user_data["setup_corp_id"] = corp_id
+
+    kb = [
+        [InlineKeyboardButton("1 курс", callback_data="setup_course:1"),
+         InlineKeyboardButton("2 курс", callback_data="setup_course:2")],
+        [InlineKeyboardButton("3 курс", callback_data="setup_course:3"),
+         InlineKeyboardButton("4 курс", callback_data="setup_course:4")],
+    ]
+    await query.edit_message_text(
+        f"{CHECK} Корпус: <b>{CORPS_BY_ID[corp_id]['name']}</b>\n\n"
+        f"{WRENCH} <b>Шаг 2 из 3</b>\n\n"
+        "Выбери курс:",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(kb),
+    )
+    return SETUP_COURSE
+
+
+async def setup_cb_course(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query   = update.callback_query
+    await query.answer()
+    course  = int(query.data.split(":")[1])
+    chat_id = query.message.chat.id
+    corp_id = context.user_data.get("setup_corp_id") or _resolve_corp(chat_id)
+
+    context.user_data["setup_course"] = course
+
+    # Анимация загрузки
+    async def animate():
+        dots = [".", "..", "..."]
+        for i in range(9):
+            try:
+                await query.edit_message_text(
+                    f"{CLOCK} Загружаю список групп {course} курса{dots[i % 3]}",
+                    parse_mode="HTML",
+                )
+                await asyncio.sleep(1)
+            except Exception:
+                break
+
+    async def load():
+        try:
+            from api import _extract_groups_from_file
+            from drive import export_as_xlsx
+            file_id = get_latest_file_id(corp_id)
+            if not file_id:
+                raise Exception("Файлов не найдено")
+            cfg = CORPS_BY_ID.get(corp_id, {})
+            xlsx = export_as_xlsx(file_id)
+            return _extract_groups_from_file(xlsx, cfg.get("table_format", "type_a"))
+        except Exception as e:
+            logger.warning("setup: ошибка групп: %s", e)
+            return []
+
+    anim = asyncio.create_task(animate())
+    try:
+        all_groups = await asyncio.wait_for(load(), timeout=15)
+        anim.cancel()
+    except asyncio.TimeoutError:
+        anim.cancel()
+        await query.edit_message_text(
+            f"{WARN} Не удалось загрузить группы (таймаут 15 сек). Попробуй /setup снова.",
+            parse_mode="HTML",
+        )
+        return ConversationHandler.END
+
+    from datetime import date as _dt
+    import re as _re
+    cur_yr = _dt.today().year % 100
+    entry_yr = (cur_yr - course + 1) if _dt.today().month >= 9 else (cur_yr - course)
+    filtered = [g for g in all_groups
+                if (m := _re.match(r'^\d+-(\d{2})', g.strip())) and int(m.group(1)) == entry_yr % 100]
+    groups = filtered or all_groups
+
+    if not groups:
+        await query.edit_message_text(
+            f"{WARN} Группы не найдены. Укажи вручную: /setgroup название",
+            parse_mode="HTML",
+        )
+        return ConversationHandler.END
+
+    import re as _re2
+    kb = []
+    for g in groups:
+        s = _re2.match(r'^([\d\-\s]+[А-ЯЁA-Z]+[\-\d]+)', g.strip())
+        label = s.group(1).strip() if s else g.strip()[:20]
+        kb.append([InlineKeyboardButton(label, callback_data=f"setup_grp:{g[:50]}")])
+
+    await query.edit_message_text(
+        f"{WRENCH} <b>Шаг 3 из 3</b>\n\nВыбери группу ({course} курс):",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(kb),
+    )
+    return SETUP_GROUP
+
+
+async def setup_cb_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query   = update.callback_query
+    await query.answer()
+    group   = query.data[10:]  # убираем "setup_grp:"
+    chat_id = query.message.chat.id
+    corp_id = context.user_data.get("setup_corp_id") or _resolve_corp(chat_id)
+    corp    = CORPS_BY_ID.get(corp_id, {})
+
+    set_chat_group(chat_id, group)
+    add_subscriber(chat_id)
+
+    await query.edit_message_text(
+        f"{CHECK} <b>Настройка завершена!</b>\n\n"
+        f"🏢 Корпус: <b>{corp.get('name', corp_id)}</b>\n"
+        f"👥 Группа: <b>{_esc(group)}</b>\n"
+        f"{BELL} Авторассылка: <b>включена</b>\n\n"
+        f"Теперь включи тихий режим командой /groupmode — "
+        "бот будет автоматически присылать расписание без лишних кнопок.",
+        parse_mode="HTML",
+    )
+    return ConversationHandler.END
+
+
 # ─── /groupmode ──────────────────────────────────────────────────────────────
 
 async def _is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -1130,6 +1281,75 @@ async def cb_delete_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
 
 
+# ─── Обработчики ReplyKeyboard кнопок ────────────────────────────────────────
+
+async def handle_reply_btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает нажатия постоянных кнопок в чатбаре."""
+    if not update.message or not update.message.text:
+        return
+    text    = update.message.text.strip()
+    chat_id = update.effective_chat.id
+
+    # Удаляем сообщение пользователя чтобы не засорять чат
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
+    if text == BTN_TODAY:
+        await _cmd_direct(update, context, "today")
+    elif text == BTN_NEW:
+        await _cmd_direct(update, context, "new")
+    elif text == BTN_CORP:
+        kb = [[InlineKeyboardButton(c["name"], callback_data=f"corp:{c['id']}")]
+              for c in CORPS if not c.get("unsupported")]
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="🏢 Выбери корпус:",
+            reply_markup=InlineKeyboardMarkup(kb),
+        )
+    elif text == BTN_GROUP:
+        kb = [
+            [InlineKeyboardButton("1 курс", callback_data="course:1"),
+             InlineKeyboardButton("2 курс", callback_data="course:2")],
+            [InlineKeyboardButton("3 курс", callback_data="course:3"),
+             InlineKeyboardButton("4 курс", callback_data="course:4")],
+        ]
+        msg = await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"{WRENCH} <b>Шаг 1:</b> Выбери свой курс",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(kb),
+        )
+        context.user_data["course_select_msg_id"] = msg.message_id
+    elif text in (BTN_SUB, BTN_UNSUB):
+        group = _resolve_group(chat_id)
+        if not group:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"{CROSS} Сначала выбери группу.",
+                parse_mode="HTML",
+            )
+            return
+        if text == BTN_SUB:
+            add_subscriber(chat_id)
+            corp = CORPS_BY_ID.get(_resolve_corp(chat_id), {})
+            notice = await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"{CHECK} Подписка оформлена! {corp.get('name','')} · {_esc(group)}",
+                parse_mode="HTML",
+                reply_markup=_reply_kb(True),
+            )
+        else:
+            remove_subscriber(chat_id)
+            notice = await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"{CROSS} Отписка оформлена.",
+                parse_mode="HTML",
+                reply_markup=_reply_kb(False),
+            )
+
+
 async def _cmd_direct(update: Update, context: ContextTypes.DEFAULT_TYPE, cmd: str):
     """Прямые команды /today и /new."""
     chat_id = update.effective_chat.id
@@ -1177,6 +1397,18 @@ def _build_ptb_app():
     """Собирает PTB Application с хэндлерами."""
     ptb = Application.builder().token(TOKEN).build()
 
+    setup_conv = ConversationHandler(
+        entry_points=[CommandHandler("setup", cmd_setup)],
+        states={
+            SETUP_CORP:   [CallbackQueryHandler(setup_cb_corp,   pattern=r"^setup_corp:")],
+            SETUP_COURSE: [CallbackQueryHandler(setup_cb_course, pattern=r"^setup_course:")],
+            SETUP_GROUP:  [CallbackQueryHandler(setup_cb_group,  pattern=r"^setup_grp:")],
+        },
+        fallbacks=[CommandHandler("cancel", cancel_group)],
+        per_message=False,
+    )
+    ptb.add_handler(setup_conv)
+
     conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(cb_menu, pattern=r"^m:")],
         states={
@@ -1207,6 +1439,14 @@ def _build_ptb_app():
     ptb.add_handler(CommandHandler("start",       cmd_start))
     ptb.add_handler(CommandHandler("status",      cmd_status))
     ptb.add_handler(CommandHandler("reset",       cmd_reset))
+    ptb.add_handler(CommandHandler("setup",       cmd_setup))
+
+    # ReplyKeyboard кнопки
+    reply_btns = [BTN_TODAY, BTN_NEW, BTN_CORP, BTN_GROUP, BTN_SUB, BTN_UNSUB]
+    ptb.add_handler(MessageHandler(
+        filters.TEXT & filters.Regex("^(" + "|".join(reply_btns) + ")$"),
+        handle_reply_btn,
+    ))
     ptb.add_handler(CommandHandler("groupmode",   cmd_groupmode))
     ptb.add_handler(CommandHandler("today",       lambda u, c: _cmd_direct(u, c, "today")))
     ptb.add_handler(CommandHandler("new",         lambda u, c: _cmd_direct(u, c, "new")))
