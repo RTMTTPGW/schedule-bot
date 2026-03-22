@@ -1393,6 +1393,21 @@ async def _cmd_direct(update: Update, context: ContextTypes.DEFAULT_TYPE, cmd: s
             pass
 
 
+# ─── Standalone хэндлеры курса/группы (работают вне ConversationHandler) ────
+
+async def cb_course_standalone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Хэндлер выбора курса — работает вне ConversationHandler (из ReplyKeyboard)."""
+    query = update.callback_query
+    # Если мы внутри ConversationHandler — делегируем туда
+    # Иначе обрабатываем самостоятельно
+    await cb_course(update, context)
+
+
+async def cb_group_select_standalone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Хэндлер выбора группы — работает вне ConversationHandler (из ReplyKeyboard)."""
+    await cb_group_select(update, context)
+
+
 def _build_ptb_app():
     """Собирает PTB Application с хэндлерами."""
     ptb = Application.builder().token(TOKEN).build()
@@ -1457,6 +1472,9 @@ def _build_ptb_app():
     ptb.add_handler(conv)
     ptb.add_handler(CallbackQueryHandler(cb_corp,       pattern=r"^corp:"))
     ptb.add_handler(CallbackQueryHandler(cb_delete_msg, pattern=r"^del:"))
+    # Standalone хэндлеры для выбора курса/группы — работают вне ConversationHandler
+    ptb.add_handler(CallbackQueryHandler(cb_course_standalone,      pattern=r"^course:"))
+    ptb.add_handler(CallbackQueryHandler(cb_group_select_standalone, pattern=r"^grp:"))
 
     return ptb
 
