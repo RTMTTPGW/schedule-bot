@@ -129,6 +129,17 @@ def _resolve_group(chat_id: int) -> str | None:
     """Возвращает группу пользователя. DEFAULT_GROUP не используется — каждый выбирает сам."""
     return get_chat_group(chat_id) or None
 
+def _corp_label(name: str) -> str:
+    return f'<tg-emoji emoji-id="5346179954948208001">\U0001f3d8</tg-emoji> {name}'
+
+
+def _build_corp_kb(back_data: str = "m:back") -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(c["name"], callback_data=f"corp:{c['id']}")]
+            for c in CORPS if not c.get("unsupported")]
+    rows.append([InlineKeyboardButton(f"{BACK} Назад", callback_data=back_data)])
+    return InlineKeyboardMarkup(rows)
+
+
 BACK_KB       = InlineKeyboardMarkup([[InlineKeyboardButton(f"{BACK} Закрыть", callback_data="del:msg")]])
 DELETE_KB     = InlineKeyboardMarkup([[InlineKeyboardButton("🗑 Удалить", callback_data="del:msg")]])
 
@@ -216,27 +227,60 @@ def _menu_keyboard_ptb(chat_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(kb)
 
 async def _send_msg_with_color_keyboard(bot, chat_id: int, text: str, subscribed: bool):
-    """Отправляет сообщение с ReplyKeyboard."""
-    await bot.send_message(
+    """Создаёт или обновляет статус-сообщение с ReplyKeyboard."""
+    kb = _reply_kb(subscribed)
+    msg_id_str = kv_get(f"status_msg:{chat_id}")
+    if msg_id_str:
+        try:
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=int(msg_id_str),
+                text=text,
+                parse_mode="HTML",
+            )
+            return
+        except Exception:
+            pass
+    msg = await bot.send_message(
         chat_id=chat_id,
         text=text,
         parse_mode="HTML",
-        reply_markup=_reply_kb(subscribed),
+        reply_markup=kb,
     )
+    kv_set(f"status_msg:{chat_id}", str(msg.message_id))
 
 
 async def _send_menu(bot, chat_id: int):
-    """Отправляет статус + ReplyKeyboard. В групповом режиме ничего не делает."""
+    """Обновляет статус-сообщение (редактирует или создаёт новое)."""
     if is_group_mode(chat_id):
         return
     text = _menu_text(chat_id)
     subscribed = is_subscriber(chat_id)
-    await bot.send_message(
+    kb = _reply_kb(subscribed)
+
+    # Пробуем отредактировать существующее статус-сообщение
+    msg_id_str = kv_get(f"status_msg:{chat_id}")
+    if msg_id_str:
+        try:
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=int(msg_id_str),
+                text=text,
+                parse_mode="HTML",
+            )
+            return
+        except Exception:
+            # Сообщение удалено или недоступно — создадим новое
+            pass
+
+    # Создаём новое статус-сообщение
+    msg = await bot.send_message(
         chat_id=chat_id,
         text=text,
         parse_mode="HTML",
-        reply_markup=_reply_kb(subscribed),
+        reply_markup=kb,
     )
+    kv_set(f"status_msg:{chat_id}", str(msg.message_id))
 async def _replace_with_menu(query, chat_id: int):
     """Удаляет текущее сообщение и отправляет меню заново."""
     try:
@@ -373,14 +417,11 @@ async def cb_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.message.delete()
             except Exception:
                 pass
-            kb = [[InlineKeyboardButton(c["name"], callback_data=f"corp:{c['id']}")]
-                  for c in CORPS if not c.get("unsupported")]
-            kb.append([InlineKeyboardButton(f"{BACK} Назад", callback_data="m:back")])
             await context.bot.send_message(
                 chat_id=chat_id,
                 text=f"{PIN} Сначала выбери корпус и группу:",
                 parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup(kb),
+                reply_markup=_build_corp_kb("m:back"),
             )
             return
         wait = _check_cooldown(chat_id, "today")
@@ -408,14 +449,11 @@ async def cb_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.message.delete()
             except Exception:
                 pass
-            kb = [[InlineKeyboardButton(c["name"], callback_data=f"corp:{c['id']}")]
-                  for c in CORPS if not c.get("unsupported")]
-            kb.append([InlineKeyboardButton(f"{BACK} Назад", callback_data="m:back")])
             await context.bot.send_message(
                 chat_id=chat_id,
                 text=f"{PIN} Сначала выбери корпус и группу:",
                 parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup(kb),
+                reply_markup=_build_corp_kb("m:back"),
             )
             return
         wait = _check_cooldown(chat_id, "new")
@@ -440,13 +478,10 @@ async def cb_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.delete()
         except Exception:
             pass
-        kb = [[InlineKeyboardButton(c["name"], callback_data=f"corp:{c['id']}")]
-              for c in CORPS if not c.get("unsupported")]
-        kb.append([InlineKeyboardButton(f"{BACK} Назад", callback_data="m:back")])
         await context.bot.send_message(
             chat_id=chat_id,
             text="🏢 Выбери корпус:",
-            reply_markup=InlineKeyboardMarkup(kb),
+            reply_markup=_build_corp_kb("m:back"),
         )
 
     elif action == "setgroup":
@@ -456,10 +491,10 @@ async def cb_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
         kb = [
-            [InlineKeyboardButton("1 курс", callback_data="course:1"),
-             InlineKeyboardButton("2 курс", callback_data="course:2")],
-            [InlineKeyboardButton("3 курс", callback_data="course:3"),
-             InlineKeyboardButton("4 курс", callback_data="course:4")],
+            [InlineKeyboardButton("I курс", callback_data="course:1"),
+             InlineKeyboardButton("II курс", callback_data="course:2")],
+            [InlineKeyboardButton("III курс", callback_data="course:3"),
+             InlineKeyboardButton("IV курс", callback_data="course:4")],
             [InlineKeyboardButton(f"{BACK} Назад", callback_data="m:back")],
         ]
         msg = await context.bot.send_message(
@@ -519,18 +554,7 @@ async def cb_corp(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.delete()
     except Exception:
         pass
-    # Уведомление о смене корпуса
-    notice = await context.bot.send_message(
-        chat_id=chat_id,
-        text=f"{CHECK} Корпус установлен: <b>{corp['name']}</b>",
-        parse_mode="HTML",
-    )
-    import asyncio as _ai
-    await _ai.sleep(1.5)
-    try:
-        await notice.delete()
-    except Exception:
-        pass
+    await query.answer(f"Корпус: {corp['name']}")
     await _send_menu(context.bot, chat_id)
 
 # ─── Выбор курса и группы из списка ──────────────────────────────────────────
@@ -669,18 +693,7 @@ async def cb_group_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
-    # Уведомление об успехе
-    notice = await context.bot.send_message(
-        chat_id=chat_id,
-        text=f"{CHECK} Группа установлена: <b>{_esc(group)}</b>",
-        parse_mode="HTML",
-    )
-    import asyncio as _asyncio
-    await _asyncio.sleep(1.5)
-    try:
-        await notice.delete()
-    except Exception:
-        pass
+    await query.answer(f"Группа: {group}")
     await _send_menu(context.bot, chat_id)
     return ConversationHandler.END
 
@@ -814,11 +827,9 @@ async def cmd_unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_setcorp_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    kb = [[InlineKeyboardButton(c["name"], callback_data=f"corp:{c['id']}")]
-          for c in CORPS if not c.get("unsupported")]
     await update.message.reply_text(
         "🏢 Выбери корпус:",
-        reply_markup=InlineKeyboardMarkup(kb),
+        reply_markup=_build_corp_kb("m:back"),
     )
 
 
@@ -891,8 +902,7 @@ async def cmd_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    kb = [[InlineKeyboardButton(c["name"], callback_data=f"setup_corp:{c['id']}")]
-          for c in CORPS if not c.get("unsupported")]
+    kb = [[InlineKeyboardButton(c["name"], callback_data=f"setup_corp:{c['id']}") ] for c in CORPS if not c.get("unsupported")]
     await update.message.reply_text(
         f"{WRENCH} <b>Настройка бота — Шаг 1 из 3</b>\n\n"
         "Выбери корпус для этого чата:",
@@ -1301,8 +1311,7 @@ async def handle_reply_btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == BTN_NEW:
         await _cmd_direct(update, context, "new")
     elif text == BTN_CORP:
-        kb = [[InlineKeyboardButton(c["name"], callback_data=f"corp:{c['id']}")]
-              for c in CORPS if not c.get("unsupported")]
+        kb = [[InlineKeyboardButton(c["name"], callback_data=f"corp:{c['id']}")] for c in CORPS if not c.get("unsupported")]
         await context.bot.send_message(
             chat_id=chat_id,
             text="🏢 Выбери корпус:",
@@ -1310,10 +1319,10 @@ async def handle_reply_btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     elif text == BTN_GROUP:
         kb = [
-            [InlineKeyboardButton("1 курс", callback_data="course:1"),
-             InlineKeyboardButton("2 курс", callback_data="course:2")],
-            [InlineKeyboardButton("3 курс", callback_data="course:3"),
-             InlineKeyboardButton("4 курс", callback_data="course:4")],
+            [InlineKeyboardButton("I курс", callback_data="course:1"),
+             InlineKeyboardButton("II курс", callback_data="course:2")],
+            [InlineKeyboardButton("III курс", callback_data="course:3"),
+             InlineKeyboardButton("IV курс", callback_data="course:4")],
         ]
         msg = await context.bot.send_message(
             chat_id=chat_id,
@@ -1334,20 +1343,20 @@ async def handle_reply_btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if text == BTN_SUB:
             add_subscriber(chat_id)
             corp = CORPS_BY_ID.get(_resolve_corp(chat_id), {})
-            notice = await context.bot.send_message(
+            await context.bot.send_message(
                 chat_id=chat_id,
-                text=f"{CHECK} Подписка оформлена! {corp.get('name','')} · {_esc(group)}",
+                text=f"{CHECK} Подписка оформлена!",
                 parse_mode="HTML",
-                reply_markup=_reply_kb(True),
             )
+            await _send_menu(context.bot, chat_id)
         else:
             remove_subscriber(chat_id)
-            notice = await context.bot.send_message(
+            await context.bot.send_message(
                 chat_id=chat_id,
                 text=f"{CROSS} Отписка оформлена.",
                 parse_mode="HTML",
-                reply_markup=_reply_kb(False),
             )
+            await _send_menu(context.bot, chat_id)
 
 
 async def _cmd_direct(update: Update, context: ContextTypes.DEFAULT_TYPE, cmd: str):
@@ -1358,10 +1367,10 @@ async def _cmd_direct(update: Update, context: ContextTypes.DEFAULT_TYPE, cmd: s
     if not group:
         # Автоматически открываем флоу выбора группы
         kb = [
-            [InlineKeyboardButton("1 курс", callback_data="course:1"),
-             InlineKeyboardButton("2 курс", callback_data="course:2")],
-            [InlineKeyboardButton("3 курс", callback_data="course:3"),
-             InlineKeyboardButton("4 курс", callback_data="course:4")],
+            [InlineKeyboardButton("I курс", callback_data="course:1"),
+             InlineKeyboardButton("II курс", callback_data="course:2")],
+            [InlineKeyboardButton("III курс", callback_data="course:3"),
+             InlineKeyboardButton("IV курс", callback_data="course:4")],
         ]
         msg = await update.message.reply_text(
             f"{PIN} Сначала выбери курс — и я покажу доступные группы.",
